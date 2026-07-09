@@ -1,0 +1,30 @@
+<html>
+    <head>
+        <title id="title">Loading...</title>
+        <style>
+            .main_iframe {
+                width: 100%;
+                height: 100%;
+                border: none;
+            }
+        </style>
+        <script>
+            const DNS_STATIC_URL = 'http://18.144.119.82:4167/static';
+        </script>
+    </head>
+    <body>
+        <iframe class="main_iframe">
+            <div>Loading...</div>
+            <noscript>
+                <div>JavaScript is required to view this page.</div>
+            </noscript>
+        </iframe>
+        <script>
+            window.addEventListener('load', function() {
+                const iframe = document.querySelector('iframe');
+                iframe.src = DNS_STATIC_URL + '/' + window.location.hostname;
+                document.getElementById('title').textContent = window.location.hostname;
+            });
+        </script>
+    </body>
+</html>

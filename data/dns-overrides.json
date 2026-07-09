@@ -1,0 +1,85 @@
+{
+  "dnsWhitelistIps": [],
+  "overrides": [
+    {
+      "domain": "example.local",
+      "records": [
+        {
+          "data": "127.0.0.1",
+          "name": "example.local",
+          "ttl": 300,
+          "type": "A"
+        }
+      ]
+    },
+    {
+      "domain": "test.local",
+      "records": [
+        {
+          "data": "192.168.1.100",
+          "name": "test.local",
+          "ttl": 300,
+          "type": "A"
+        },
+        {
+          "data": "::1",
+          "name": "test.local",
+          "ttl": 300,
+          "type": "AAAA"
+        }
+      ]
+    },
+    {
+      "domain": "*.dev.local",
+      "records": [
+        {
+          "data": "127.0.0.1",
+          "name": "*.dev.local",
+          "ttl": 300,
+          "type": "A"
+        }
+      ]
+    },
+    {
+      "domain": "api.example.com",
+      "records": [
+        {
+          "data": "10.0.0.5",
+          "name": "api.example.com",
+          "ttl": 600,
+          "type": "A"
+        },
+        {
+          "data": "api.example.com",
+          "name": "www.api.example.com",
+          "ttl": 600,
+          "type": "CNAME"
+        }
+      ]
+    },
+    {
+      "domain": "example.com",
+      "records": [
+        {
+          "data": "104.26.4.212",
+          "name": "example.com",
+          "ttl": 600,
+          "type": "A"
+        }
+      ]
+    },
+    {
+      "domain": "test.dns.local",
+      "records": [
+        {
+          "data": "127.0.0.1",
+          "name": "test.dns.local",
+          "ttl": 300,
+          "type": "A"
+        }
+      ],
+      "staticHtmlPath": "data/static/test_dns_local.html",
+      "staticPort": 4167
+    }
+  ]
+}

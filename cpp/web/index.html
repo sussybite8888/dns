@@ -1,0 +1,1375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DNS Server - Domain Overrides</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/theme/monokai.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            opacity: 0.9;
+        }
+        
+        .controls {
+            padding: 20px 30px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #dee2e6;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+        
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-success {
+            background: #28a745;
+            color: white;
+        }
+        
+        .btn-success:hover {
+            background: #218838;
+        }
+        
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #c82333;
+        }
+        
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #28a745;
+        }
+        
+        .status-indicator.disabled {
+            background: #dc3545;
+        }
+        
+        .domains-list {
+            padding: 30px;
+        }
+
+        .blocked-attempts-panel {
+            margin: 20px 30px 0;
+            background: #fff5f5;
+            border: 1px solid #f5c2c7;
+            border-radius: 8px;
+            padding: 16px;
+        }
+
+        .blocked-attempts-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            color: #842029;
+            font-weight: 600;
+        }
+
+        .blocked-attempts-list {
+            max-height: 260px;
+            overflow-y: auto;
+            background: #fff;
+            border: 1px solid #f5c2c7;
+            border-radius: 6px;
+            padding: 10px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+            color: #5c1a1f;
+        }
+
+        .blocked-attempt-item {
+            padding: 4px 0;
+            border-bottom: 1px dashed #f3b4ba;
+        }
+
+        .blocked-attempt-item:last-child {
+            border-bottom: none;
+        }
+
+        .blocked-attempt-empty {
+            color: #8f3d46;
+        }
+
+        .whitelist-list {
+            margin-top: 10px;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            max-height: 240px;
+            overflow-y: auto;
+            padding: 8px;
+            background: #f8f9fa;
+        }
+
+        .whitelist-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px;
+            background: #fff;
+            border: 1px solid #e9ecef;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+
+        .whitelist-item:last-child {
+            margin-bottom: 0;
+        }
+        
+        .domain-card {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 15px;
+            transition: all 0.3s;
+        }
+        
+        .domain-card:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            transform: translateY(-2px);
+        }
+        
+        .domain-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .domain-name {
+            font-size: 1.3em;
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .domain-actions {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 12px;
+        }
+        
+        .records-list {
+            margin-top: 15px;
+        }
+        
+        .record-item {
+            background: white;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .record-info {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+        
+        .record-badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            background: #e9ecef;
+        }
+        
+        .record-badge.type-A {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .record-badge.type-AAAA {
+            background: #cce5ff;
+            color: #004085;
+        }
+        
+        .record-badge.type-CNAME {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal.active {
+            display: flex;
+        }
+        
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        
+        .modal-header {
+            margin-bottom: 20px;
+        }
+        
+        .modal-header h2 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #555;
+        }
+        
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .records-section {
+            margin-top: 20px;
+        }
+        
+        .record-form {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 10px;
+        }
+        
+        .record-form-row {
+            display: grid;
+            grid-template-columns: 1fr 2fr 1fr;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #6c757d;
+        }
+        
+        .empty-state svg {
+            width: 80px;
+            height: 80px;
+            margin-bottom: 20px;
+            opacity: 0.5;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #6c757d;
+        }
+        
+        .html-editor-container {
+            margin-top: 15px;
+        }
+        
+        .html-editor-container label {
+            margin-bottom: 10px;
+            display: block;
+        }
+        
+        .CodeMirror {
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            height: 400px;
+            font-size: 14px;
+        }
+        
+        .editor-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        
+        .editor-tab {
+            padding: 8px 16px;
+            background: #e9ecef;
+            border: 1px solid #dee2e6;
+            border-radius: 6px 6px 0 0;
+            cursor: pointer;
+            border-bottom: none;
+        }
+        
+        .editor-tab.active {
+            background: white;
+            border-color: #667eea;
+            color: #667eea;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🌐 DNS Server</h1>
+            <p>Manage Domain Overrides</p>
+        </div>
+        
+        <div class="controls">
+            <div class="status">
+                <span class="status-indicator" id="statusIndicator"></span>
+                <span id="statusText">Loading...</span>
+            </div>
+            <div style="display: flex; gap: 10px;">
+                <button class="btn btn-primary" onclick="openWhitelistModal()">Whitelist</button>
+                <button class="btn btn-primary" onclick="openAddModal()">+ Add Domain</button>
+                <button class="btn btn-success" onclick="openAddStaticModal()">+ Add Static Override</button>
+            </div>
+        </div>
+
+        <div class="blocked-attempts-panel">
+            <div class="blocked-attempts-header">
+                <span>Blocked DNS Whitelist Attempts (last 20)</span>
+                <button class="btn btn-sm btn-danger" onclick="loadBlockedAttempts()">Refresh</button>
+            </div>
+            <div class="blocked-attempts-list" id="blockedAttemptsList">
+                <div class="blocked-attempt-empty">Loading blocked attempts...</div>
+            </div>
+        </div>
+        
+        <div class="domains-list" id="domainsList">
+            <div class="loading">Loading domains...</div>
+        </div>
+    </div>
+    
+    <!-- Add/Edit Domain Modal -->
+    <div class="modal" id="domainModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modalTitle">Add Domain</h2>
+            </div>
+            <form id="domainForm" onsubmit="saveDomain(event)">
+                <div class="form-group">
+                    <label for="domainName">Domain Name</label>
+                    <input type="text" id="domainName" required placeholder="example.local or *.example.local">
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="enableStatic" onchange="toggleStaticFields()"> Enable Static Website
+                    </label>
+                </div>
+                
+                <div id="staticFields" style="display: none;">
+                    <div class="form-group">
+                        <label for="staticPort">Static Port</label>
+                        <input type="number" id="staticPort" min="1024" max="65535" placeholder="8080">
+                    </div>
+                    <div class="form-group">
+                        <div class="editor-tabs">
+                            <button type="button" class="editor-tab active" onclick="switchEditorTab('editor', 'domainModal')">HTML Editor</button>
+                            <button type="button" class="editor-tab" onclick="switchEditorTab('path', 'domainModal')">File Path</button>
+                        </div>
+                        <div id="editorTabDomain" class="html-editor-container">
+                            <label for="htmlEditorDomain">HTML Content</label>
+                            <textarea id="htmlEditorDomain"></textarea>
+                        </div>
+                        <div id="pathTabDomain" class="html-editor-container" style="display: none;">
+                            <label for="staticHtmlPath">HTML File Path</label>
+                            <input type="text" id="staticHtmlPath" placeholder="/path/to/index.html">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="records-section">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <label>DNS Records</label>
+                        <button type="button" class="btn btn-sm btn-primary" onclick="addRecord()">+ Add Record</button>
+                    </div>
+                    <div id="recordsContainer"></div>
+                </div>
+                
+                <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
+                    <button type="button" class="btn" onclick="closeModal()" style="background: #6c757d; color: white;">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Domain</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Login Modal -->
+    <div class="modal" id="loginModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Login Required</h2>
+            </div>
+            <form id="loginForm" onsubmit="handleLogin(event)">
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" required placeholder="Enter password">
+                </div>
+                <div id="loginError" style="color: #dc3545; margin-bottom: 15px; display: none;"></div>
+                <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
+                    <button type="submit" class="btn btn-primary">Login</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Add Static Override Modal -->
+    <div class="modal" id="staticModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Add Static Override</h2>
+            </div>
+            <form id="staticForm" onsubmit="saveStaticOverride(event)">
+                <div class="form-group">
+                    <label for="staticDomainName">Domain Name</label>
+                    <input type="text" id="staticDomainName" required placeholder="example.local">
+                </div>
+                <div class="form-group">
+                    <label for="staticPortInput">Static Port</label>
+                    <input type="number" id="staticPortInput" min="1024" max="65535" required placeholder="8080">
+                </div>
+                <div class="form-group">
+                    <div class="editor-tabs">
+                        <button type="button" class="editor-tab active" onclick="switchEditorTab('editor')">HTML Editor</button>
+                        <button type="button" class="editor-tab" onclick="switchEditorTab('path')">File Path</button>
+                    </div>
+                    <div id="editorTab" class="html-editor-container">
+                        <label for="htmlEditor">HTML Content</label>
+                        <textarea id="htmlEditor"></textarea>
+                    </div>
+                    <div id="pathTab" class="html-editor-container" style="display: none;">
+                        <label for="staticHtmlPathInput">HTML File Path</label>
+                        <input type="text" id="staticHtmlPathInput" placeholder="/path/to/index.html">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="staticIpAddress">IP Address (for DNS A record)</label>
+                    <input type="text" id="staticIpAddress" required placeholder="127.0.0.1" value="127.0.0.1">
+                </div>
+                <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
+                    <button type="button" class="btn" onclick="closeStaticModal()" style="background: #6c757d; color: white;">Cancel</button>
+                    <button type="submit" class="btn btn-success">Create Static Override</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Whitelist Modal -->
+    <div class="modal" id="whitelistModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>DNS Whitelist</h2>
+            </div>
+            <form onsubmit="addWhitelistIp(event)">
+                <div class="form-group">
+                    <label for="whitelistIpInput">Add IPv4 address</label>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="text" id="whitelistIpInput" placeholder="192.168.1.10" required>
+                        <button type="submit" class="btn btn-primary">Add</button>
+                    </div>
+                </div>
+            </form>
+            <div class="whitelist-list" id="whitelistList">
+                <div class="blocked-attempt-empty">Loading whitelist...</div>
+            </div>
+            <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
+                <button type="button" class="btn" onclick="closeWhitelistModal()" style="background: #6c757d; color: white;">Close</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/xml/xml.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/javascript/javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/css/css.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/htmlmixed/htmlmixed.min.js"></script>
+    <script>
+        let currentEditingDomain = null;
+        let recordCounter = 0;
+        let htmlEditor = null;
+        let htmlEditorDomain = null;
+        let blockedAttemptsPoller = null;
+        
+        // Initialize CodeMirror editors
+        window.addEventListener('DOMContentLoaded', () => {
+            htmlEditor = CodeMirror.fromTextArea(document.getElementById('htmlEditor'), {
+                lineNumbers: true,
+                mode: 'htmlmixed',
+                theme: 'monokai',
+                indentUnit: 2,
+                indentWithTabs: false,
+                lineWrapping: true
+            });
+            
+            htmlEditorDomain = CodeMirror.fromTextArea(document.getElementById('htmlEditorDomain'), {
+                lineNumbers: true,
+                mode: 'htmlmixed',
+                theme: 'monokai',
+                indentUnit: 2,
+                indentWithTabs: false,
+                lineWrapping: true
+            });
+            
+            // Set default HTML template
+            const defaultHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Static Website</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <h1>Welcome to Your Static Website</h1>
+    <p>Edit this HTML to customize your static website.</p>
+</body>
+</html>`;
+            htmlEditor.setValue(defaultHtml);
+            htmlEditorDomain.setValue(defaultHtml);
+        });
+        
+        function switchEditorTab(tab, modalId = 'staticModal') {
+            const isStaticModal = modalId === 'staticModal';
+            const editorTab = isStaticModal ? document.getElementById('editorTab') : document.getElementById('editorTabDomain');
+            const pathTab = isStaticModal ? document.getElementById('pathTab') : document.getElementById('pathTabDomain');
+            const tabs = isStaticModal ? 
+                document.querySelectorAll('#staticModal .editor-tab') : 
+                document.querySelectorAll('#domainModal .editor-tab');
+            
+            tabs.forEach(t => t.classList.remove('active'));
+            
+            if (tab === 'editor') {
+                editorTab.style.display = 'block';
+                pathTab.style.display = 'none';
+                tabs[0].classList.add('active');
+            } else {
+                editorTab.style.display = 'none';
+                pathTab.style.display = 'block';
+                tabs[1].classList.add('active');
+            }
+        }
+        
+        // Load domains on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            checkAuthStatus();
+        });
+        
+        async function checkAuthStatus() {
+            try {
+                const response = await fetch('/api/auth-status');
+                const data = await response.json();
+                
+                if (data.requiresAuth && !data.authenticated) {
+                    // Show login modal
+                    document.getElementById('loginModal').classList.add('active');
+                } else {
+                    // Load the app
+                    loadStatus();
+                    loadBlockedAttempts();
+                    loadDomains();
+                    startBlockedAttemptsPolling();
+                }
+            } catch (error) {
+                console.error('Error checking auth status:', error);
+                // Try to load anyway
+                loadStatus();
+                loadBlockedAttempts();
+                loadDomains();
+                startBlockedAttemptsPolling();
+            }
+        }
+        
+        async function handleLogin(event) {
+            event.preventDefault();
+            const password = document.getElementById('password').value;
+            const errorDiv = document.getElementById('loginError');
+            
+            try {
+                const response = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: password })
+                });
+                
+                const result = await response.json();
+                
+                if (result.status === 'success' && result.authenticated) {
+                    // Close login modal
+                    document.getElementById('loginModal').classList.remove('active');
+                    document.getElementById('loginForm').reset();
+                    errorDiv.style.display = 'none';
+                    
+                    // Load the app
+                    loadStatus();
+                    loadBlockedAttempts();
+                    loadDomains();
+                    startBlockedAttemptsPolling();
+                } else {
+                    errorDiv.textContent = result.message || 'Invalid password';
+                    errorDiv.style.display = 'block';
+                }
+            } catch (error) {
+                console.error('Error logging in:', error);
+                errorDiv.textContent = 'Error connecting to server';
+                errorDiv.style.display = 'block';
+            }
+        }
+        
+        async function loadStatus() {
+            try {
+                const response = await fetch('/api/status');
+                if (response.status === 401) {
+                    document.getElementById('loginModal').classList.add('active');
+                    return;
+                }
+                const data = await response.json();
+                const indicator = document.getElementById('statusIndicator');
+                const text = document.getElementById('statusText');
+                
+                if (data.overridesEnabled) {
+                    indicator.classList.remove('disabled');
+                    text.textContent = data.dnsWhitelistEnabled ? 'Overrides Enabled (Whitelist ON)' : 'Overrides Enabled';
+                } else {
+                    indicator.classList.add('disabled');
+                    text.textContent = data.dnsWhitelistEnabled ? 'Overrides Disabled (Whitelist ON)' : 'Overrides Disabled';
+                }
+            } catch (error) {
+                console.error('Error loading status:', error);
+            }
+        }
+
+        async function loadBlockedAttempts() {
+            const list = document.getElementById('blockedAttemptsList');
+            try {
+                const response = await fetch('/api/whitelist-blocked');
+                if (response.status === 401) {
+                    document.getElementById('loginModal').classList.add('active');
+                    list.innerHTML = '<div class="blocked-attempt-empty">Authentication required to view blocked attempts.</div>';
+                    return;
+                }
+                if (!response.ok) {
+                    list.innerHTML = '<div class="blocked-attempt-empty">Blocked-attempts endpoint unavailable. Restart with the latest server binary.</div>';
+                    return;
+                }
+                const data = await response.json();
+                const attempts = data.blockedAttempts || [];
+
+                if (!data.dnsWhitelistEnabled) {
+                    list.innerHTML = '<div class="blocked-attempt-empty">Whitelist is disabled at build-time.</div>';
+                    return;
+                }
+
+                if (attempts.length === 0) {
+                    list.innerHTML = '<div class="blocked-attempt-empty">No blocked attempts recorded yet.</div>';
+                    return;
+                }
+
+                list.innerHTML = attempts.map(item => `
+                    <div class="blocked-attempt-item">
+                        [${escapeHtml(item.timestamp || '')}] ${escapeHtml(item.protocol || 'DNS')} blocked ${escapeHtml(item.ip || 'unknown')} querying ${escapeHtml(item.domain || 'unknown')}
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('Error loading blocked attempts:', error);
+                list.innerHTML = '<div class="blocked-attempt-empty">Could not load blocked attempts from server.</div>';
+            }
+        }
+
+        function startBlockedAttemptsPolling() {
+            if (blockedAttemptsPoller) return;
+            blockedAttemptsPoller = setInterval(loadBlockedAttempts, 5000);
+        }
+
+        function openWhitelistModal() {
+            document.getElementById('whitelistModal').classList.add('active');
+            loadWhitelistIps();
+        }
+
+        function closeWhitelistModal() {
+            document.getElementById('whitelistModal').classList.remove('active');
+            document.getElementById('whitelistIpInput').value = '';
+        }
+
+        async function loadWhitelistIps() {
+            const container = document.getElementById('whitelistList');
+            container.innerHTML = '<div class="blocked-attempt-empty">Loading whitelist...</div>';
+            try {
+                const response = await fetch('/api/whitelist');
+                if (response.status === 401) {
+                    document.getElementById('loginModal').classList.add('active');
+                    container.innerHTML = '<div class="blocked-attempt-empty">Authentication required.</div>';
+                    return;
+                }
+                if (!response.ok) {
+                    container.innerHTML = '<div class="blocked-attempt-empty">Could not load whitelist from server.</div>';
+                    return;
+                }
+
+                const data = await response.json();
+                const ips = data.ips || [];
+
+                if (!data.dnsWhitelistEnabled) {
+                    container.innerHTML = '<div class="blocked-attempt-empty">Whitelist is disabled at build-time.</div>';
+                    return;
+                }
+
+                if (ips.length === 0) {
+                    container.innerHTML = '<div class="blocked-attempt-empty">No whitelist IPs configured.</div>';
+                    return;
+                }
+
+                container.innerHTML = ips.map(ip => `
+                    <div class="whitelist-item">
+                        <span>${escapeHtml(ip)}</span>
+                        <button class="btn btn-sm btn-danger" onclick="removeWhitelistIp('${escapeHtml(ip)}')">Remove</button>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('Error loading whitelist:', error);
+                container.innerHTML = '<div class="blocked-attempt-empty">Error loading whitelist.</div>';
+            }
+        }
+
+        async function addWhitelistIp(event) {
+            event.preventDefault();
+            const input = document.getElementById('whitelistIpInput');
+            const ip = input.value.trim();
+            if (!ip) return;
+
+            try {
+                const response = await fetch('/api/whitelist', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ip })
+                });
+                const result = await response.json();
+                if (result.status !== 'success') {
+                    alert(result.message || 'Failed to add IP');
+                    return;
+                }
+                input.value = '';
+                await loadWhitelistIps();
+            } catch (error) {
+                console.error('Error adding whitelist IP:', error);
+                alert('Error adding whitelist IP');
+            }
+        }
+
+        async function removeWhitelistIp(ip) {
+            if (!confirm(`Remove ${ip} from whitelist?`)) {
+                return;
+            }
+            try {
+                const response = await fetch(`/api/whitelist/${encodeURIComponent(ip)}`, {
+                    method: 'DELETE'
+                });
+                const result = await response.json();
+                if (result.status !== 'success') {
+                    alert(result.message || 'Failed to remove IP');
+                    return;
+                }
+                await loadWhitelistIps();
+            } catch (error) {
+                console.error('Error removing whitelist IP:', error);
+                alert('Error removing whitelist IP');
+            }
+        }
+        
+        async function loadDomains() {
+            try {
+                const response = await fetch('/api/domains');
+                if (response.status === 401) {
+                    document.getElementById('loginModal').classList.add('active');
+                    return;
+                }
+                const data = await response.json();
+                displayDomains(data.domains || []);
+            } catch (error) {
+                console.error('Error loading domains:', error);
+                document.getElementById('domainsList').innerHTML = '<div class="empty-state">Error loading domains</div>';
+            }
+        }
+        
+        function displayDomains(domains) {
+            const container = document.getElementById('domainsList');
+            
+            if (domains.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="12" y1="8" x2="12" y2="12"></line>
+                            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                        </svg>
+                        <h3>No domains configured</h3>
+                        <p>Click "Add Domain" to get started</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = domains.map(domain => `
+                <div class="domain-card">
+                    <div class="domain-header">
+                        <div class="domain-name">${escapeHtml(domain.domain)}${domain.staticPort ? ' <span style="color: #28a745; font-size: 0.8em;">(Static: :' + domain.staticPort + ')</span>' : ''}</div>
+                        <div class="domain-actions">
+                            ${domain.staticPort ? `<button class="btn btn-sm btn-success" onclick="openStaticViewer('${escapeHtml(domain.domain)}')">View Static</button>` : ''}
+                            <button class="btn btn-sm btn-primary" onclick="editDomain('${escapeHtml(domain.domain)}')">Edit</button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteDomain('${escapeHtml(domain.domain)}')">Delete</button>
+                        </div>
+                    </div>
+                    <div class="records-list">
+                        ${domain.records.map(record => `
+                            <div class="record-item">
+                                <div class="record-info">
+                                    <span class="record-badge type-${record.type}">${escapeHtml(record.type)}</span>
+                                    <span><strong>Name:</strong> ${escapeHtml(record.name)}</span>
+                                    <span><strong>Data:</strong> ${escapeHtml(record.data)}</span>
+                                    <span><strong>TTL:</strong> ${record.ttl || 300}</span>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        function openAddModal() {
+            currentEditingDomain = null;
+            document.getElementById('modalTitle').textContent = 'Add Domain';
+            document.getElementById('domainForm').reset();
+            document.getElementById('recordsContainer').innerHTML = '';
+            recordCounter = 0;
+            addRecord();
+            
+            // Reset static fields
+            document.getElementById('enableStatic').checked = false;
+            toggleStaticFields();
+            const defaultHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Static Website</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <h1>Welcome to Your Static Website</h1>
+    <p>Edit this HTML to customize your static website.</p>
+</body>
+</html>`;
+            if (htmlEditorDomain) {
+                htmlEditorDomain.setValue(defaultHtml);
+                switchEditorTab('editor', 'domainModal');
+            }
+            
+            document.getElementById('domainModal').classList.add('active');
+        }
+        
+        function editDomain(domain) {
+            fetch(`/api/domains/${encodeURIComponent(domain)}`)
+                .then(res => res.json())
+                .then(data => {
+                    currentEditingDomain = domain;
+                    document.getElementById('modalTitle').textContent = 'Edit Domain';
+                    document.getElementById('domainName').value = data.domain.domain;
+                    document.getElementById('recordsContainer').innerHTML = '';
+                    recordCounter = 0;
+                    
+                    // Set static fields if they exist
+                    if (data.domain.staticPort) {
+                        document.getElementById('enableStatic').checked = true;
+                        document.getElementById('staticPort').value = data.domain.staticPort;
+                        document.getElementById('staticHtmlPath').value = data.domain.staticHtmlPath || '';
+                        toggleStaticFields();
+                        
+                        // Load HTML content if file exists
+                        if (data.domain.staticHtmlPath && htmlEditorDomain) {
+                            fetch(`/api/load-html?path=${encodeURIComponent(data.domain.staticHtmlPath)}`)
+                                .then(res => res.json())
+                                .then(htmlData => {
+                                    if (htmlData.status === 'success' && htmlData.content) {
+                                        htmlEditorDomain.setValue(htmlData.content);
+                                        switchEditorTab('editor', 'domainModal');
+                                    } else {
+                                        switchEditorTab('path', 'domainModal');
+                                    }
+                                })
+                                .catch(() => {
+                                    switchEditorTab('path', 'domainModal');
+                                });
+                        } else if (data.domain.staticHtmlPath) {
+                            switchEditorTab('path', 'domainModal');
+                        }
+                    } else {
+                        document.getElementById('enableStatic').checked = false;
+                        toggleStaticFields();
+                    }
+                    
+                    data.domain.records.forEach(record => {
+                        addRecord(record);
+                    });
+                    
+                    if (data.domain.records.length === 0) {
+                        addRecord();
+                    }
+                    
+                    document.getElementById('domainModal').classList.add('active');
+                })
+                .catch(error => {
+                    console.error('Error loading domain:', error);
+                    alert('Error loading domain');
+                });
+        }
+        
+        function addRecord(record = null) {
+            const container = document.getElementById('recordsContainer');
+            const id = recordCounter++;
+            const recordDiv = document.createElement('div');
+            recordDiv.className = 'record-form';
+            recordDiv.id = `record-${id}`;
+            recordDiv.innerHTML = `
+                <div class="record-form-row">
+                    <select name="recordType" required>
+                        <option value="A" ${record?.type === 'A' ? 'selected' : ''}>A</option>
+                        <option value="AAAA" ${record?.type === 'AAAA' ? 'selected' : ''}>AAAA</option>
+                        <option value="CNAME" ${record?.type === 'CNAME' ? 'selected' : ''}>CNAME</option>
+                        <option value="MX" ${record?.type === 'MX' ? 'selected' : ''}>MX</option>
+                        <option value="TXT" ${record?.type === 'TXT' ? 'selected' : ''}>TXT</option>
+                        <option value="NS" ${record?.type === 'NS' ? 'selected' : ''}>NS</option>
+                    </select>
+                    <input type="text" name="recordName" placeholder="Record name" value="${record?.name || ''}" required>
+                    <input type="text" name="recordData" placeholder="IP or data" value="${record?.data || ''}" required>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <input type="number" name="recordTtl" placeholder="TTL" value="${record?.ttl || 300}" style="width: 100px;">
+                    <button type="button" class="btn btn-sm btn-danger" onclick="removeRecord(${id})">Remove</button>
+                </div>
+            `;
+            container.appendChild(recordDiv);
+        }
+        
+        function removeRecord(id) {
+            document.getElementById(`record-${id}`).remove();
+        }
+        
+        async function saveDomain(event) {
+            event.preventDefault();
+            
+            const domainName = document.getElementById('domainName').value;
+            const records = [];
+            
+            const recordForms = document.querySelectorAll('.record-form');
+            recordForms.forEach(form => {
+                const type = form.querySelector('[name="recordType"]').value;
+                const name = form.querySelector('[name="recordName"]').value;
+                const data = form.querySelector('[name="recordData"]').value;
+                const ttl = parseInt(form.querySelector('[name="recordTtl"]').value) || 300;
+                
+                if (name && data) {
+                    records.push({ type, name, data, ttl });
+                }
+            });
+            
+            if (records.length === 0) {
+                alert('Please add at least one DNS record');
+                return;
+            }
+            
+            const domainData = {
+                domain: domainName,
+                records: records
+            };
+            
+            // Add static fields if enabled
+            if (document.getElementById('enableStatic').checked) {
+                const staticPort = parseInt(document.getElementById('staticPort').value);
+                const editorTabDomain = document.getElementById('editorTabDomain');
+                const pathTabDomain = document.getElementById('pathTabDomain');
+                let staticHtmlPath = '';
+                let htmlContent = '';
+                
+                if (staticPort > 0) {
+                    if (editorTabDomain.style.display !== 'none' && htmlEditorDomain) {
+                        // Using HTML editor
+                        htmlContent = htmlEditorDomain.getValue();
+                        // Generate a path for the HTML file
+                        staticHtmlPath = `data/static/${domainName.replace(/[^a-zA-Z0-9]/g, '_')}.html`;
+                    } else {
+                        // Using file path
+                        staticHtmlPath = document.getElementById('staticHtmlPath').value;
+                    }
+                    
+                    if (staticHtmlPath || htmlContent) {
+                        domainData.staticPort = staticPort;
+                        domainData.staticHtmlPath = staticHtmlPath;
+                        
+                        // If we have HTML content, save it first
+                        if (htmlContent) {
+                            try {
+                                const saveResponse = await fetch('/api/save-html', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        path: staticHtmlPath,
+                                        content: htmlContent
+                                    })
+                                });
+                                
+                                const saveResult = await saveResponse.json();
+                                if (saveResult.status !== 'success') {
+                                    alert('Error saving HTML file: ' + (saveResult.message || 'Unknown error'));
+                                    return;
+                                }
+                            } catch (error) {
+                                console.error('Error saving HTML file:', error);
+                                alert('Error saving HTML file');
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            try {
+                let response;
+                if (currentEditingDomain) {
+                    response = await fetch(`/api/domains/${encodeURIComponent(currentEditingDomain)}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(domainData)
+                    });
+                } else {
+                    response = await fetch('/api/domains', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(domainData)
+                    });
+                }
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    closeModal();
+                    loadDomains();
+                } else {
+                    alert('Error: ' + (result.message || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Error saving domain:', error);
+                alert('Error saving domain');
+            }
+        }
+        
+        async function deleteDomain(domain) {
+            if (!confirm(`Are you sure you want to delete ${domain}?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/domains/${encodeURIComponent(domain)}`, {
+                    method: 'DELETE'
+                });
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    loadDomains();
+                } else {
+                    alert('Error: ' + (result.message || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Error deleting domain:', error);
+                alert('Error deleting domain');
+            }
+        }
+        
+        function closeModal() {
+            document.getElementById('domainModal').classList.remove('active');
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        function toggleStaticFields() {
+            const checkbox = document.getElementById('enableStatic');
+            const fields = document.getElementById('staticFields');
+            fields.style.display = checkbox.checked ? 'block' : 'none';
+        }
+        
+        function openAddStaticModal() {
+            // Reset form and editor
+            document.getElementById('staticForm').reset();
+            const defaultHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Static Website</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <h1>Welcome to Your Static Website</h1>
+    <p>Edit this HTML to customize your static website.</p>
+</body>
+</html>`;
+            if (htmlEditor) {
+                htmlEditor.setValue(defaultHtml);
+            }
+            switchEditorTab('editor');
+            document.getElementById('staticModal').classList.add('active');
+        }
+        
+        function closeStaticModal() {
+            document.getElementById('staticModal').classList.remove('active');
+            document.getElementById('staticForm').reset();
+        }
+        
+        async function saveStaticOverride(event) {
+            event.preventDefault();
+            
+            const domainName = document.getElementById('staticDomainName').value;
+            const staticPort = parseInt(document.getElementById('staticPortInput').value);
+            const ipAddress = document.getElementById('staticIpAddress').value;
+            
+            // Check which tab is active
+            const editorTab = document.getElementById('editorTab');
+            const pathTab = document.getElementById('pathTab');
+            let staticHtmlPath = '';
+            let htmlContent = '';
+            
+            if (editorTab.style.display !== 'none' && htmlEditor) {
+                // Using HTML editor
+                htmlContent = htmlEditor.getValue();
+                // Generate a path for the HTML file
+                staticHtmlPath = `data/static/${domainName.replace(/[^a-zA-Z0-9]/g, '_')}.html`;
+            } else {
+                // Using file path
+                staticHtmlPath = document.getElementById('staticHtmlPathInput').value;
+                if (!staticHtmlPath) {
+                    alert('Please provide either HTML content or a file path');
+                    return;
+                }
+            }
+            
+            const domainData = {
+                domain: domainName,
+                records: [
+                    {
+                        type: 'A',
+                        name: domainName,
+                        data: ipAddress,
+                        ttl: 300
+                    }
+                ],
+                staticPort: staticPort,
+                staticHtmlPath: staticHtmlPath
+            };
+            
+            // If we have HTML content, save it first
+            if (htmlContent) {
+                try {
+                    const saveResponse = await fetch('/api/save-html', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            path: staticHtmlPath,
+                            content: htmlContent
+                        })
+                    });
+                    
+                    const saveResult = await saveResponse.json();
+                    if (saveResult.status !== 'success') {
+                        alert('Error saving HTML file: ' + (saveResult.message || 'Unknown error'));
+                        return;
+                    }
+                } catch (error) {
+                    console.error('Error saving HTML file:', error);
+                    alert('Error saving HTML file');
+                    return;
+                }
+            }
+            
+            try {
+                const response = await fetch('/api/domains', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(domainData)
+                });
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    closeStaticModal();
+                    loadDomains();
+                } else {
+                    alert('Error: ' + (result.message || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Error saving static override:', error);
+                alert('Error saving static override');
+            }
+        }
+        
+        function openStaticViewer(domain) {
+            // Get the current port from the window location (defaults to 4167)
+            const port = window.location.port || '4167';
+            window.open(`http://localhost:${port}/static/${encodeURIComponent(domain)}/viewer`, '_blank');
+        }
+        
+        // Close modal on outside click
+        document.getElementById('domainModal').addEventListener('click', (e) => {
+            if (e.target.id === 'domainModal') {
+                closeModal();
+            }
+        });
+        
+        document.getElementById('staticModal').addEventListener('click', (e) => {
+            if (e.target.id === 'staticModal') {
+                closeStaticModal();
+            }
+        });
+
+        document.getElementById('whitelistModal').addEventListener('click', (e) => {
+            if (e.target.id === 'whitelistModal') {
+                closeWhitelistModal();
+            }
+        });
+    </script>
+</body>
+</html>
+
