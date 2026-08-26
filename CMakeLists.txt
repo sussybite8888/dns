@@ -39,6 +39,7 @@ set(SOURCES
     cpp/src/main.cpp
     cpp/src/DnsServer.cpp
     cpp/src/DnsPacket.cpp
+    cpp/src/Moderation.cpp
 )
 
 # Create executable

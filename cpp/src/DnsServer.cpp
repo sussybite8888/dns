@@ -1,5 +1,6 @@
 #include "DnsServer.hpp"
 #include "DnsPacket.hpp"
+#include "Moderation.hpp"
 #include <fstream>
 #include <iostream>
 #include <cstring>
@@ -560,8 +561,20 @@ void DnsServer::setupHttpServer(uint16_t port) {
                 std::ifstream file(override.staticHtmlPath);
                 if (file.is_open()) {
                     std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-                    res.set_content(content, "text/html");
                     file.close();
+
+                    // Re-check on serve in case the file was written out-of-band
+                    // or points at a pre-existing file that bypassed save-html.
+                    moderation::ModerationResult verdict = moderation::moderateHtml(content);
+                    if (verdict.blocked()) {
+                        std::cerr << "Refusing to serve blocked static override '" << domain
+                                  << "' [" << verdict.category << "]: " << verdict.reason << std::endl;
+                        res.status = 403;
+                        res.set_content(moderation::blockedNoticePage(verdict), "text/html");
+                        return;
+                    }
+
+                    res.set_content(content, "text/html");
                     return;
                 } else {
                     res.status = 404;
@@ -1069,7 +1082,25 @@ void DnsServer::setupHttpServer(uint16_t port) {
             json body = json::parse(req.body);
             std::string path = body["path"].get<std::string>();
             std::string content = body["content"].get<std::string>();
-            
+
+            // Moderate content before hosting it: reject popup bombs, instant
+            // redirects, and inappropriate material.
+            moderation::ModerationResult verdict = moderation::moderateHtml(content);
+            if (verdict.blocked()) {
+                std::cerr << "Blocked static content for " << path << " ["
+                          << verdict.category << "]: " << verdict.reason
+                          << " (matched: " << verdict.match << ")" << std::endl;
+                res.status = 403;
+                json response = {
+                    {"status", "error"},
+                    {"message", "Content blocked by moderation: " + verdict.reason},
+                    {"category", verdict.category},
+                    {"reason", verdict.reason}
+                };
+                res.set_content(response.dump(), "application/json");
+                return;
+            }
+
             // Create directory if it doesn't exist
             size_t lastSlash = path.find_last_of("/");
             if (lastSlash != std::string::npos) {
@@ -1212,12 +1243,22 @@ void DnsServer::setupStaticHttpServer(uint16_t httpPort) {
                 });
                 
                 // Serve the HTML file
-                svr.Get("/", [htmlPath](const httplib::Request&, httplib::Response& res) {
+                svr.Get("/", [htmlPath, domain](const httplib::Request&, httplib::Response& res) {
                     std::ifstream file(htmlPath);
                     if (file.is_open()) {
                         std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-                        res.set_content(content, "text/html");
                         file.close();
+
+                        moderation::ModerationResult verdict = moderation::moderateHtml(content);
+                        if (verdict.blocked()) {
+                            std::cerr << "Refusing to serve blocked static override '" << domain
+                                      << "' [" << verdict.category << "]: " << verdict.reason << std::endl;
+                            res.status = 403;
+                            res.set_content(moderation::blockedNoticePage(verdict), "text/html");
+                            return;
+                        }
+
+                        res.set_content(content, "text/html");
                     } else {
                         res.status = 404;
                         res.set_content("HTML file not found: " + htmlPath, "text/plain");
