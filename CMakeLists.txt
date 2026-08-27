@@ -45,6 +45,41 @@ set(SOURCES
 # Create executable
 add_executable(dns-server ${SOURCES})
 
+# macOS: package Release builds as an app bundle (dns-server.app).
+# Debug/RelWithDebInfo builds stay a plain CLI binary for easy local use.
+if(APPLE AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    set_target_properties(dns-server PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "DNS Server"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "local.dns-server"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        # Custom template adds LSBackgroundOnly so the server runs as a
+        # background process (no Dock icon or launch animation)
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Info.plist.in"
+    )
+    message(STATUS "macOS Release build: packaging as dns-server.app bundle")
+
+    # Ship the web UI inside the bundle; the server extracts it to its data
+    # directory on first launch. Must run before the codesign step below,
+    # since bundle resources are part of the signature seal.
+    add_custom_command(TARGET dns-server POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_CURRENT_SOURCE_DIR}/cpp/web
+            $<TARGET_BUNDLE_DIR:dns-server>/Contents/Resources/web
+        COMMENT "Copying web UI into dns-server.app resources"
+    )
+
+    # Embed dylib dependencies (OpenSSL, brotli, ...) so the bundle is
+    # self-contained, then re-sign. Runs after every (re)link of the binary.
+    add_custom_command(TARGET dns-server POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            -DBUNDLE_PATH=$<TARGET_BUNDLE_DIR:dns-server>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/FixupBundle.cmake
+        COMMENT "Embedding dylib dependencies into dns-server.app"
+    )
+endif()
+
 # Use modern include directories (faster than global include_directories)
 target_include_directories(dns-server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp/src)
 
@@ -75,6 +110,18 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(httplib)
 target_link_libraries(dns-server PRIVATE httplib::httplib)
 
+# OpenSSL (optional) - enables the native DNS-over-HTTPS (TLS) server.
+# Without it, DoH is still served over plain HTTP at /dns-query
+# (e.g. behind a TLS-terminating reverse proxy).
+find_package(OpenSSL)
+if(OPENSSL_FOUND)
+    target_compile_definitions(dns-server PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+    target_link_libraries(dns-server PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    message(STATUS "OpenSSL found - native DoH (HTTPS) server enabled")
+else()
+    message(STATUS "OpenSSL not found - DoH available over plain HTTP only (/dns-query)")
+endif()
+
 # Compiler-specific options
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     # Use faster compilation flags in Debug mode
@@ -103,6 +150,8 @@ else()
     message(STATUS "DNS whitelist enforcement: DISABLED")
 endif()
 
-# Installation
-install(TARGETS dns-server DESTINATION bin)
+# Installation (BUNDLE covers macOS Release .app builds, RUNTIME the plain binary)
+install(TARGETS dns-server
+    BUNDLE DESTINATION .
+    RUNTIME DESTINATION bin)
 

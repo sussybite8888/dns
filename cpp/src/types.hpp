@@ -29,6 +29,9 @@ struct DnsServerConfig {
     std::string databasePath = "data/dns-overrides.json";
     std::string adminPassword;  // Password for the web editor
     bool dnsWhitelistEnabled = false;  // Restrict DNS clients by IP when enabled
+    uint16_t dohPort = 443;     // Port for the native DoH (HTTPS) server
+    std::string dohCertPath;    // TLS certificate (PEM); empty disables native DoH TLS
+    std::string dohKeyPath;     // TLS private key (PEM); empty disables native DoH TLS
 };
 
 struct DnsQuery {

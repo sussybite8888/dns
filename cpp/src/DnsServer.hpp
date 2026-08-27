@@ -10,6 +10,7 @@
 #include <unordered_set>
 #include <deque>
 #include <mutex>
+#include <optional>
 
 // Forward declarations
 struct DnsMessage;
@@ -41,6 +42,7 @@ private:
     std::unique_ptr<std::thread> httpThread_;
     std::unique_ptr<std::thread> staticHttpThread_;
     std::unique_ptr<std::thread> tcpThread_;
+    std::unique_ptr<std::thread> dohTlsThread_;
     std::atomic<bool> running_;
     std::unordered_set<std::string> dnsWhitelistIps_;
     mutable std::mutex dnsWhitelistMutex_;
@@ -53,23 +55,25 @@ private:
     void handleTcpConnection(int clientSocket);
     void sendTcpResponse(int clientSocket, const std::vector<uint8_t>& response);
     void handleDnsQuery(const std::vector<uint8_t>& msg, const std::string& clientAddr, uint16_t clientPort, int tcpSocket = -1);
+    // Resolve a raw DNS query to a raw DNS response (TCP/DoH size semantics).
+    // Returns an empty vector if the query could not be decoded at all.
+    std::vector<uint8_t> resolveDnsQuery(const std::vector<uint8_t>& msg, const std::string& clientAddr,
+                                         const std::string& transport);
     DomainOverride* findDomainOverride(const std::string& domain);
-    void sendOverrideResponse(const DnsMessage& query, const DomainOverride& override, 
-                             const std::string& clientAddr, uint16_t clientPort, int tcpSocket = -1);
-    void proxyToGoogleDns(const DnsMessage& query, const std::string& clientAddr, uint16_t clientPort, int tcpSocket = -1);
-    void sendErrorResponse(const DnsMessage& query, uint8_t rcode, 
-                          const std::string& clientAddr, uint16_t clientPort, int tcpSocket = -1);
+    DnsMessage buildOverrideResponse(const DnsMessage& query, const DomainOverride& override) const;
+    DnsMessage buildErrorResponse(const DnsMessage& query, uint8_t rcode) const;
+    DnsMessage buildControlResponse(const DnsMessage& query, const std::string& domain, bool enabled) const;
+    std::optional<std::vector<uint8_t>> queryUpstream(const std::vector<uint8_t>& queryBuffer);
     void setupHttpServer(uint16_t port);
+    void setupDohEndpoints(httplib::Server& svr);
+    void runDohTlsServer();
     void setupStaticHttpServer(uint16_t httpPort);
     void sendUdpResponse(const std::vector<uint8_t>& response, const std::string& addr, uint16_t port);
     void sendResponse(const std::vector<uint8_t>& response, const std::string& addr, uint16_t port, int tcpSocket = -1);
     std::vector<uint8_t> ensureUdpSize(const DnsMessage& message, int tcpSocket);
-    bool handleControlDomain(const DnsMessage& query, const std::string& domain, 
-                             const std::string& clientAddr, uint16_t clientPort, int tcpSocket = -1);
-    void sendControlResponse(const DnsMessage& query, const std::string& domain, bool enabled,
-                            const std::string& clientAddr, uint16_t clientPort, int tcpSocket = -1);
     bool checkAuth(const httplib::Request& req);
     bool isDnsClientAllowed(const std::string& clientAddr) const;
+    bool isDohClientAllowed(const httplib::Request& req) const;
     void logBlockedWhitelistAttempt(const std::string& protocol, const std::string& clientAddr, const std::string& domain);
 };
 

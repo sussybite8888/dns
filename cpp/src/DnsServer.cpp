@@ -9,6 +9,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <nlohmann/json.hpp>
 #include <httplib.h>
 #include <thread>
@@ -20,6 +22,7 @@
 #include <chrono>
 #include <ctime>
 #include <iomanip>
+#include <cctype>
 
 using json = nlohmann::json;
 
@@ -29,6 +32,56 @@ constexpr size_t MAX_BLOCKED_WHITELIST_ATTEMPTS = 20;
 bool isValidIpv4Address(const std::string& ip) {
     struct sockaddr_in sa;
     return inet_pton(AF_INET, ip.c_str(), &(sa.sin_addr)) == 1;
+}
+
+// Validates a whitelist hostname entry: dot-separated labels of
+// letters/digits/hyphens (no leading/trailing hyphen).
+bool isValidHostname(const std::string& host) {
+    if (host.empty() || host.size() > 253) {
+        return false;
+    }
+    size_t labelLen = 0;
+    char prev = '.';
+    for (size_t i = 0; i < host.size(); i++) {
+        char c = host[i];
+        if (std::isalnum(static_cast<unsigned char>(c))) {
+            labelLen++;
+        } else if (c == '-') {
+            if (prev == '.') return false; // Label can't start with '-'
+            labelLen++;
+        } else if (c == '.') {
+            if (labelLen == 0 || labelLen > 63 || prev == '-') return false;
+            labelLen = 0;
+        } else {
+            return false;
+        }
+        prev = c;
+    }
+    return labelLen > 0 && labelLen <= 63 && prev != '-';
+}
+
+std::string toLowerCopy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return value;
+}
+
+// Extracts the lowercase hostname from a Host header ("host:port") or an
+// Origin header ("scheme://host:port").
+std::string extractHostname(std::string value) {
+    size_t schemePos = value.find("://");
+    if (schemePos != std::string::npos) {
+        value = value.substr(schemePos + 3);
+    }
+    size_t slash = value.find('/');
+    if (slash != std::string::npos) {
+        value = value.substr(0, slash);
+    }
+    size_t colon = value.find(':');
+    if (colon != std::string::npos) {
+        value = value.substr(0, colon);
+    }
+    return toLowerCopy(value);
 }
 
 std::string extractDnsDomain(const std::vector<uint8_t>& msg) {
@@ -41,6 +94,82 @@ std::string extractDnsDomain(const std::vector<uint8_t>& msg) {
         // Ignore decode failures for malformed packets.
     }
     return "unknown";
+}
+
+// RFC 8484 uses base64url (RFC 4648 §5) without padding; accept standard
+// base64 characters and optional padding too.
+bool base64UrlDecode(const std::string& input, std::vector<uint8_t>& out) {
+    auto decodeChar = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '-' || c == '+') return 62;
+        if (c == '_' || c == '/') return 63;
+        return -1;
+    };
+
+    out.clear();
+    uint32_t accum = 0;
+    int bits = 0;
+    for (char c : input) {
+        if (c == '=') {
+            break; // Padding: remaining bits are discarded below.
+        }
+        int value = decodeChar(c);
+        if (value < 0) {
+            return false;
+        }
+        accum = (accum << 6) | static_cast<uint32_t>(value);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<uint8_t>((accum >> bits) & 0xFF));
+        }
+    }
+    return true;
+}
+
+// Non-loopback IPv4 addresses of this machine, for display in the web UI
+// (the addresses clients should point their DNS at).
+std::vector<std::string> getServerIpv4Addresses() {
+    std::vector<std::string> ips;
+    struct ifaddrs* ifaddr = nullptr;
+    if (getifaddrs(&ifaddr) != 0) {
+        return ips;
+    }
+    for (struct ifaddrs* ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) {
+            continue;
+        }
+        if ((ifa->ifa_flags & IFF_LOOPBACK) || !(ifa->ifa_flags & IFF_UP)) {
+            continue;
+        }
+        char ip[INET_ADDRSTRLEN];
+        auto* addr = reinterpret_cast<struct sockaddr_in*>(ifa->ifa_addr);
+        if (inet_ntop(AF_INET, &addr->sin_addr, ip, INET_ADDRSTRLEN)) {
+            ips.push_back(ip);
+        }
+    }
+    freeifaddrs(ifaddr);
+    return ips;
+}
+
+// Smallest TTL across the answers, used for the DoH Cache-Control header.
+uint32_t minResponseTtl(const std::vector<uint8_t>& response) {
+    try {
+        DnsMessage message = DnsPacket::decode(response);
+        uint32_t minTtl = 0;
+        bool first = true;
+        for (const auto& answer : message.answers) {
+            if (first || answer.ttl < minTtl) {
+                minTtl = answer.ttl;
+                first = false;
+            }
+        }
+        return first ? 0 : minTtl;
+    } catch (...) {
+        return 0;
+    }
 }
 }
 
@@ -100,6 +229,10 @@ void DnsServer::loadDatabase() {
                 if (ipJson.is_string()) {
                     std::string ip = ipJson.get<std::string>();
                     if (!ip.empty()) {
+                        // Hostname entries are matched case-insensitively
+                        if (!isValidIpv4Address(ip)) {
+                            ip = toLowerCopy(ip);
+                        }
                         whitelistIps.push_back(ip);
                     }
                 }
@@ -273,8 +406,8 @@ void DnsServer::handleTcpConnection(int clientSocket) {
 }
 
 void DnsServer::sendTcpResponse(int clientSocket, const std::vector<uint8_t>& response) {
-    // TCP DNS messages are prefixed with a 2-byte length field
-    uint16_t length = htons(static_cast<uint16_t>(response.size()));
+    // TCP DNS messages are prefixed with a 2-byte length field (network byte order)
+    uint16_t length = static_cast<uint16_t>(response.size());
     uint8_t lengthBytes[2];
     lengthBytes[0] = (length >> 8) & 0xFF;
     lengthBytes[1] = length & 0xFF;
@@ -352,46 +485,79 @@ void DnsServer::sendResponse(const std::vector<uint8_t>& response, const std::st
 }
 
 void DnsServer::handleDnsQuery(const std::vector<uint8_t>& msg, const std::string& clientAddr, uint16_t clientPort, int tcpSocket) {
+    std::vector<uint8_t> response = resolveDnsQuery(msg, clientAddr, tcpSocket >= 0 ? "TCP" : "UDP");
+    if (response.empty()) {
+        return; // Query was undecodable; nothing sensible to send back.
+    }
+
+    // For UDP, ensure the response fits in 512 bytes
+    if (tcpSocket < 0 && response.size() > 512) {
+        try {
+            DnsMessage message = DnsPacket::decode(response);
+            message.clearTruncated();
+            response = ensureUdpSize(message, tcpSocket);
+        } catch (...) {
+            // If decode fails, just truncate to 512 bytes
+            response.resize(512);
+        }
+    }
+
+    sendResponse(response, clientAddr, clientPort, tcpSocket);
+}
+
+std::vector<uint8_t> DnsServer::resolveDnsQuery(const std::vector<uint8_t>& msg, const std::string& clientAddr,
+                                                const std::string& transport) {
+    DnsMessage query;
     try {
-        DnsMessage query = DnsPacket::decode(msg);
-        
+        query = DnsPacket::decode(msg);
+    } catch (const std::exception& e) {
+        std::cerr << "Error decoding DNS query: " << e.what() << std::endl;
+        return {};
+    }
+
+    try {
         if (query.questions.empty()) {
-            sendErrorResponse(query, 1, clientAddr, clientPort, tcpSocket); // Format error
-            return;
+            return DnsPacket::encode(buildErrorResponse(query, 1)); // Format error
         }
-        
+
         const auto& question = query.questions[0];
-        std::string domain = question.name;
-        DnsType type = question.type;
-        
-        std::cout << "DNS Query: " << domain << " (type: " << DnsPacket::typeToString(type) << ")" << std::endl;
-        
+        const std::string& domain = question.name;
+
+        std::cout << "DNS Query (" << transport << "): " << domain
+                  << " (type: " << DnsPacket::typeToString(question.type) << ")" << std::endl;
+
         // Check for control domains (enable/disable overrides)
-        if (handleControlDomain(query, domain, clientAddr, clientPort, tcpSocket)) {
-            return;
+        if (domain == "enable.control.dns.local" || domain == "disable.control.dns.local") {
+            bool enable = (domain == "enable.control.dns.local");
+            overridesEnabled_ = enable;
+            std::cout << "Overrides " << (enable ? "enabled" : "disabled")
+                      << " via DNS control domain from " << clientAddr << std::endl;
+            return DnsPacket::encode(buildControlResponse(query, domain, enable));
         }
-        
+
         // Check for domain override
         if (overridesEnabled_) {
             DomainOverride* override = findDomainOverride(domain);
             if (override) {
                 std::cout << "Using override for domain: " << domain << std::endl;
-                sendOverrideResponse(query, *override, clientAddr, clientPort, tcpSocket);
-                return;
+                return DnsPacket::encode(buildOverrideResponse(query, *override));
             }
         }
-        
+
         // Proxy to upstream DNS
         std::cout << "Proxying to " << config_.upstreamDns << ": " << domain << std::endl;
-        proxyToGoogleDns(query, clientAddr, clientPort, tcpSocket);
-        
+        auto upstream = queryUpstream(DnsPacket::encode(query));
+        if (!upstream) {
+            return DnsPacket::encode(buildErrorResponse(query, 2)); // Server failure
+        }
+        return std::move(*upstream);
+
     } catch (const std::exception& e) {
         std::cerr << "Error handling DNS query: " << e.what() << std::endl;
         try {
-            DnsMessage query = DnsPacket::decode(msg);
-            sendErrorResponse(query, 2, clientAddr, clientPort, tcpSocket); // Server failure
+            return DnsPacket::encode(buildErrorResponse(query, 2));
         } catch (...) {
-            // Ignore decode errors
+            return {};
         }
     }
 }
@@ -415,14 +581,13 @@ DomainOverride* DnsServer::findDomainOverride(const std::string& domain) {
     return nullptr;
 }
 
-void DnsServer::sendOverrideResponse(const DnsMessage& query, const DomainOverride& override, 
-                                     const std::string& clientAddr, uint16_t clientPort, int tcpSocket) {
+DnsMessage DnsServer::buildOverrideResponse(const DnsMessage& query, const DomainOverride& override) const {
     DnsMessage response{};  // Zero-initialize all fields
     response.id = query.id;
     response.setResponse();
     response.setRecursionAvailable();
     response.questions = query.questions;
-    
+
     // Convert override records to DNS answers
     for (const auto& record : override.records) {
         DnsAnswer answer;
@@ -433,50 +598,43 @@ void DnsServer::sendOverrideResponse(const DnsMessage& query, const DomainOverri
         answer.data = record.data;
         response.answers.push_back(answer);
     }
-    
-    std::vector<uint8_t> responseBuffer = ensureUdpSize(response, tcpSocket);
-    sendResponse(responseBuffer, clientAddr, clientPort, tcpSocket);
+
+    return response;
 }
 
-void DnsServer::proxyToGoogleDns(const DnsMessage& query, const std::string& clientAddr, uint16_t clientPort, int tcpSocket) {
+std::optional<std::vector<uint8_t>> DnsServer::queryUpstream(const std::vector<uint8_t>& queryBuffer) {
     // Create a new socket for proxying
     int proxySocket = socket(AF_INET, SOCK_DGRAM, 0);
     if (proxySocket < 0) {
         std::cerr << "Failed to create proxy socket" << std::endl;
-        sendErrorResponse(query, 2, clientAddr, clientPort, tcpSocket);
-        return;
+        return std::nullopt;
     }
-    
+
     // Set timeout
     struct timeval timeout;
     timeout.tv_sec = 5;
     timeout.tv_usec = 0;
     setsockopt(proxySocket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    
-    // Encode query
-    std::vector<uint8_t> queryBuffer = DnsPacket::encode(query);
-    
+
     // Send to upstream DNS
     struct sockaddr_in upstreamAddr;
     std::memset(&upstreamAddr, 0, sizeof(upstreamAddr));
     upstreamAddr.sin_family = AF_INET;
     upstreamAddr.sin_port = htons(53);
-    
+
     if (inet_pton(AF_INET, config_.upstreamDns.c_str(), &upstreamAddr.sin_addr) <= 0) {
         std::cerr << "Invalid upstream DNS address: " << config_.upstreamDns << std::endl;
         close(proxySocket);
-        sendErrorResponse(query, 2, clientAddr, clientPort, tcpSocket);
-        return;
+        return std::nullopt;
     }
-    
+
     if (sendto(proxySocket, queryBuffer.data(), queryBuffer.size(), 0,
                reinterpret_cast<struct sockaddr*>(&upstreamAddr), sizeof(upstreamAddr)) < 0) {
         std::cerr << "Error sending to upstream DNS: " << strerror(errno) << std::endl;
         close(proxySocket);
-        sendErrorResponse(query, 2, clientAddr, clientPort, tcpSocket);
-        return;
+        return std::nullopt;
     }
-    
+
     // Receive response
     // Use larger buffer for UDP to handle EDNS0, but limit to reasonable size
     const size_t MAX_UDP_RESPONSE_SIZE = 4096;
@@ -484,57 +642,32 @@ void DnsServer::proxyToGoogleDns(const DnsMessage& query, const std::string& cli
     socklen_t addrLen = sizeof(upstreamAddr);
     ssize_t received = recvfrom(proxySocket, responseBuffer.data(), responseBuffer.size(), 0,
                                 reinterpret_cast<struct sockaddr*>(&upstreamAddr), &addrLen);
-    
+
     close(proxySocket);
-    
+
     if (received < 0) {
         std::cerr << "Error receiving from upstream DNS: " << strerror(errno) << std::endl;
-        sendErrorResponse(query, 2, clientAddr, clientPort, tcpSocket);
-        return;
+        return std::nullopt;
     }
-    
+
     // Validate received size
     if (received > static_cast<ssize_t>(MAX_UDP_RESPONSE_SIZE)) {
         std::cerr << "Upstream response too large: " << received << " bytes" << std::endl;
-        sendErrorResponse(query, 2, clientAddr, clientPort, tcpSocket);
-        return;
+        return std::nullopt;
     }
-    
+
     responseBuffer.resize(received);
-    
-    // For UDP, ensure response fits in 512 bytes
-    if (tcpSocket < 0 && responseBuffer.size() > 512) {
-        // Decode, trim, and re-encode if needed
-        try {
-            DnsMessage upstreamResponse = DnsPacket::decode(responseBuffer);
-            upstreamResponse.clearTruncated(); // Ensure TC flag is not set
-            responseBuffer = ensureUdpSize(upstreamResponse, tcpSocket);
-        } catch (...) {
-            // If decode fails, just truncate to 512 bytes
-            responseBuffer.resize(512);
-        }
-    }
-    
-    // Forward response to client
-    sendResponse(responseBuffer, clientAddr, clientPort, tcpSocket);
+    return responseBuffer;
 }
 
-void DnsServer::sendErrorResponse(const DnsMessage& query, uint8_t rcode, 
-                                  const std::string& clientAddr, uint16_t clientPort, int tcpSocket) {
-    try {
-        DnsMessage response{};  // Zero-initialize all fields
-        response.id = query.id;
-        response.setResponse();
-        response.setRecursionAvailable();
-        response.setRCode(rcode);
-        response.questions = query.questions;
-        response.answers.clear();
-        
-        std::vector<uint8_t> responseBuffer = ensureUdpSize(response, tcpSocket);
-        sendResponse(responseBuffer, clientAddr, clientPort, tcpSocket);
-    } catch (const std::exception& e) {
-        std::cerr << "Error sending error response: " << e.what() << std::endl;
-    }
+DnsMessage DnsServer::buildErrorResponse(const DnsMessage& query, uint8_t rcode) const {
+    DnsMessage response{};  // Zero-initialize all fields
+    response.id = query.id;
+    response.setResponse();
+    response.setRecursionAvailable();
+    response.setRCode(rcode);
+    response.questions = query.questions;
+    return response;
 }
 
 void DnsServer::setupHttpServer(uint16_t port) {
@@ -756,7 +889,9 @@ void DnsServer::setupHttpServer(uint16_t port) {
         json response = {
             {"status", "success"},
             {"overridesEnabled", overridesEnabled_.load()},
-            {"dnsWhitelistEnabled", config_.dnsWhitelistEnabled}
+            {"dnsWhitelistEnabled", config_.dnsWhitelistEnabled},
+            {"serverIps", getServerIpv4Addresses()},
+            {"dnsPort", config_.port}
         };
         res.set_content(response.dump(), "application/json");
     });
@@ -784,13 +919,18 @@ void DnsServer::setupHttpServer(uint16_t port) {
             json body = json::parse(req.body);
             std::string ip = body.value("ip", "");
             if (!isValidIpv4Address(ip)) {
-                res.status = 400;
-                json response = {
-                    {"status", "error"},
-                    {"message", "Invalid IPv4 address"}
-                };
-                res.set_content(response.dump(), "application/json");
-                return;
+                // Hostname entries authorize DoH clients by Origin/Host header
+                std::string host = toLowerCopy(ip);
+                if (!isValidHostname(host)) {
+                    res.status = 400;
+                    json response = {
+                        {"status", "error"},
+                        {"message", "Invalid IPv4 address or hostname"}
+                    };
+                    res.set_content(response.dump(), "application/json");
+                    return;
+                }
+                ip = host;
             }
 
             bool added = false;
@@ -1208,8 +1348,184 @@ void DnsServer::setupHttpServer(uint16_t port) {
         std::cout << "Overrides disabled via HTTP endpoint" << std::endl;
     });
     
+    // DNS-over-HTTPS endpoints, also served here over plain HTTP
+    // (e.g. for use behind a TLS-terminating reverse proxy)
+    setupDohEndpoints(svr);
+
     std::cout << "HTTP Server listening on 0.0.0.0:" << port << std::endl;
+    std::cout << "DoH endpoints: /dns-query (RFC 8484 wire format), /resolve (JSON)" << std::endl;
     svr.listen("0.0.0.0", port);
+}
+
+void DnsServer::setupDohEndpoints(httplib::Server& svr) {
+    // Shared handler for RFC 8484 wire-format queries (GET and POST /dns-query)
+    auto handleDohQuery = [this](const std::vector<uint8_t>& wireQuery,
+                                 const httplib::Request& req, httplib::Response& res) {
+        const size_t MAX_DNS_MESSAGE_SIZE = 4096;
+        if (wireQuery.empty() || wireQuery.size() > MAX_DNS_MESSAGE_SIZE) {
+            res.status = 400;
+            res.set_content("Invalid DNS message size", "text/plain");
+            return;
+        }
+
+        if (!isDohClientAllowed(req)) {
+            std::cout << "Blocked DoH DNS client (not in whitelist): " << req.remote_addr << std::endl;
+            logBlockedWhitelistAttempt("DoH", req.remote_addr, extractDnsDomain(wireQuery));
+            res.status = 403;
+            res.set_content("Forbidden", "text/plain");
+            return;
+        }
+
+        std::vector<uint8_t> response = resolveDnsQuery(wireQuery, req.remote_addr, "DoH");
+        if (response.empty()) {
+            res.status = 400;
+            res.set_content("Malformed DNS query", "text/plain");
+            return;
+        }
+
+        // RFC 8484 §5.1: cache lifetime should reflect the smallest answer TTL
+        res.set_header("Cache-Control", "max-age=" + std::to_string(minResponseTtl(response)));
+        res.set_content(std::string(response.begin(), response.end()), "application/dns-message");
+    };
+
+    svr.Get("/dns-query", [handleDohQuery](const httplib::Request& req, httplib::Response& res) {
+        std::string dnsParam = req.get_param_value("dns");
+        if (dnsParam.empty()) {
+            res.status = 400;
+            res.set_content("Missing 'dns' query parameter (base64url-encoded DNS message)", "text/plain");
+            return;
+        }
+        std::vector<uint8_t> wireQuery;
+        if (!base64UrlDecode(dnsParam, wireQuery)) {
+            res.status = 400;
+            res.set_content("Invalid base64url in 'dns' parameter", "text/plain");
+            return;
+        }
+        handleDohQuery(wireQuery, req, res);
+    });
+
+    svr.Post("/dns-query", [handleDohQuery](const httplib::Request& req, httplib::Response& res) {
+        std::string contentType = req.get_header_value("Content-Type");
+        if (contentType.find("application/dns-message") == std::string::npos) {
+            res.status = 415;
+            res.set_content("Content-Type must be application/dns-message", "text/plain");
+            return;
+        }
+        std::vector<uint8_t> wireQuery(req.body.begin(), req.body.end());
+        handleDohQuery(wireQuery, req, res);
+    });
+
+    // JSON resolver (Google/Cloudflare style): /resolve?name=example.com&type=A
+    svr.Get("/resolve", [this](const httplib::Request& req, httplib::Response& res) {
+        auto sendJsonError = [&res](int status, const std::string& message) {
+            res.status = status;
+            json response = {
+                {"status", "error"},
+                {"message", message}
+            };
+            res.set_content(response.dump(), "application/json");
+        };
+
+        std::string name = req.get_param_value("name");
+        if (name.empty()) {
+            sendJsonError(400, "Missing 'name' query parameter");
+            return;
+        }
+        // Accept FQDNs with a trailing dot
+        if (name.size() > 1 && name.back() == '.') {
+            name.pop_back();
+        }
+
+        std::string typeStr = req.get_param_value("type");
+        if (typeStr.empty()) {
+            typeStr = "A";
+        }
+        DnsType qtype;
+        if (std::all_of(typeStr.begin(), typeStr.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+            qtype = static_cast<DnsType>(std::stoi(typeStr));
+        } else {
+            qtype = DnsPacket::stringToType(typeStr);
+        }
+
+        if (!isDohClientAllowed(req)) {
+            std::cout << "Blocked DoH DNS client (not in whitelist): " << req.remote_addr << std::endl;
+            logBlockedWhitelistAttempt("DoH", req.remote_addr, name);
+            sendJsonError(403, "Forbidden");
+            return;
+        }
+
+        DnsMessage query{};  // Zero-initialize all fields
+        query.id = 0;        // RFC 8484 §4.1: DoH clients should use ID 0
+        query.flags = 0x0100; // Recursion desired
+        DnsQuestion question;
+        question.name = name;
+        question.type = qtype;
+        question.class_ = DnsClass::IN;
+        query.questions.push_back(question);
+
+        std::vector<uint8_t> wireQuery;
+        try {
+            wireQuery = DnsPacket::encode(query);
+        } catch (const std::exception& e) {
+            sendJsonError(400, std::string("Invalid query: ") + e.what());
+            return;
+        }
+
+        std::vector<uint8_t> wireResponse = resolveDnsQuery(wireQuery, req.remote_addr, "DoH");
+        if (wireResponse.empty()) {
+            sendJsonError(502, "Failed to resolve query");
+            return;
+        }
+
+        DnsMessage response;
+        try {
+            response = DnsPacket::decode(wireResponse);
+        } catch (const std::exception& e) {
+            sendJsonError(502, std::string("Failed to decode upstream response: ") + e.what());
+            return;
+        }
+
+        json out;
+        out["Status"] = response.getRCode();
+        out["TC"] = response.isTruncated();
+        out["RD"] = true;
+        out["RA"] = (response.flags & 0x0080) != 0;
+        out["Question"] = json::array();
+        for (const auto& q : response.questions) {
+            out["Question"].push_back({
+                {"name", q.name},
+                {"type", static_cast<uint16_t>(q.type)}
+            });
+        }
+        out["Answer"] = json::array();
+        for (const auto& a : response.answers) {
+            out["Answer"].push_back({
+                {"name", a.name},
+                {"type", static_cast<uint16_t>(a.type)},
+                {"TTL", a.ttl},
+                {"data", a.data}
+            });
+        }
+        res.set_content(out.dump(), "application/dns-json");
+    });
+}
+
+void DnsServer::runDohTlsServer() {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+    httplib::SSLServer svr(config_.dohCertPath.c_str(), config_.dohKeyPath.c_str());
+    if (!svr.is_valid()) {
+        std::cerr << "Failed to start DoH TLS server: could not load certificate '" << config_.dohCertPath
+                  << "' or key '" << config_.dohKeyPath << "'" << std::endl;
+        return;
+    }
+    setupDohEndpoints(svr);
+    std::cout << "DoH (HTTPS) server listening on 0.0.0.0:" << config_.dohPort
+              << " (endpoints: /dns-query, /resolve)" << std::endl;
+    svr.listen("0.0.0.0", config_.dohPort);
+#else
+    std::cerr << "DoH TLS requested (--doh-cert/--doh-key) but this build has no OpenSSL support. "
+              << "Install OpenSSL and rebuild, or serve /dns-query behind a TLS reverse proxy." << std::endl;
+#endif
 }
 
 void DnsServer::setupStaticHttpServer(uint16_t httpPort) {
@@ -1332,7 +1648,12 @@ void DnsServer::start(uint16_t httpPort) {
     
     // Start static HTTP server in separate thread
     staticHttpThread_ = std::make_unique<std::thread>(&DnsServer::setupStaticHttpServer, this, httpPort);
-    
+
+    // Start native DoH (HTTPS) server if a TLS cert/key pair was provided
+    if (!config_.dohCertPath.empty() && !config_.dohKeyPath.empty()) {
+        dohTlsThread_ = std::make_unique<std::thread>(&DnsServer::runDohTlsServer, this);
+    }
+
     // Start TCP server in separate thread
     tcpThread_ = std::make_unique<std::thread>([this]() {
         while (running_) {
@@ -1416,6 +1737,10 @@ void DnsServer::stop() {
     
     if (tcpThread_ && tcpThread_->joinable()) {
         tcpThread_->join();
+    }
+
+    if (dohTlsThread_ && dohTlsThread_->joinable()) {
+        dohTlsThread_->join();
     }
 }
 
@@ -1571,35 +1896,33 @@ bool DnsServer::isDnsClientAllowed(const std::string& clientAddr) const {
     return dnsWhitelistIps_.find(clientAddr) != dnsWhitelistIps_.end();
 }
 
-bool DnsServer::handleControlDomain(const DnsMessage& query, const std::string& domain, 
-                                    const std::string& clientAddr, uint16_t clientPort, int tcpSocket) {
-    // Check for enable.control.dns.local
-    if (domain == "enable.control.dns.local") {
-        overridesEnabled_ = true;
-        std::cout << "Overrides enabled via DNS control domain from " << clientAddr << std::endl;
-        sendControlResponse(query, domain, true, clientAddr, clientPort, tcpSocket);
+bool DnsServer::isDohClientAllowed(const httplib::Request& req) const {
+    if (!config_.dnsWhitelistEnabled) {
         return true;
     }
-    
-    // Check for disable.control.dns.local
-    if (domain == "disable.control.dns.local") {
-        overridesEnabled_ = false;
-        std::cout << "Overrides disabled via DNS control domain from " << clientAddr << std::endl;
-        sendControlResponse(query, domain, false, clientAddr, clientPort, tcpSocket);
+    std::lock_guard<std::mutex> lock(dnsWhitelistMutex_);
+    if (dnsWhitelistIps_.find(req.remote_addr) != dnsWhitelistIps_.end()) {
         return true;
     }
-    
+    // Hostname whitelist entries also authorize DoH requests whose Origin
+    // (browser clients) or Host header names them. Note: headers are
+    // client-controlled, so this is weaker than the IP check.
+    for (const char* header : {"Origin", "Host"}) {
+        std::string host = extractHostname(req.get_header_value(header));
+        if (!host.empty() && dnsWhitelistIps_.find(host) != dnsWhitelistIps_.end()) {
+            return true;
+        }
+    }
     return false;
 }
 
-void DnsServer::sendControlResponse(const DnsMessage& query, const std::string& domain, bool enabled,
-                                    const std::string& clientAddr, uint16_t clientPort, int tcpSocket) {
+DnsMessage DnsServer::buildControlResponse(const DnsMessage& query, const std::string& domain, bool enabled) const {
     DnsMessage response{};  // Zero-initialize all fields
     response.id = query.id;
     response.setResponse();
     response.setRecursionAvailable();
     response.questions = query.questions;
-    
+
     // Return an A record with 127.0.0.1 to indicate success
     // The IP can be used to indicate status: 127.0.0.1 = enabled, 127.0.0.2 = disabled
     DnsAnswer answer;
@@ -1609,8 +1932,7 @@ void DnsServer::sendControlResponse(const DnsMessage& query, const std::string& 
     answer.ttl = 0; // No caching for control responses
     answer.data = enabled ? "127.0.0.1" : "127.0.0.2";
     response.answers.push_back(answer);
-    
-    std::vector<uint8_t> responseBuffer = ensureUdpSize(response, tcpSocket);
-    sendResponse(responseBuffer, clientAddr, clientPort, tcpSocket);
+
+    return response;
 }
 

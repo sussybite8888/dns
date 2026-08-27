@@ -15,7 +15,7 @@
         
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #ffffff /* linear-gradient(135deg, #667eea 0%, #764ba2 100%); */
             min-height: 100vh;
             padding: 20px;
         }
@@ -30,7 +30,7 @@
         }
         
         .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
             color: white;
             padding: 30px;
             text-align: center;
@@ -114,6 +114,41 @@
         
         .domains-list {
             padding: 30px;
+        }
+
+        .server-info-panel {
+            margin: 20px 30px 0;
+            background: #f0f4ff;
+            border: 1px solid #c7d2fe;
+            border-radius: 8px;
+            padding: 16px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .server-info-panel .server-info-label {
+            font-weight: 600;
+            color: #4c51bf;
+        }
+
+        .server-info-panel .server-ip {
+            font-family: 'SF Mono', Monaco, Consolas, monospace;
+            background: white;
+            border: 1px solid #c7d2fe;
+            border-radius: 6px;
+            padding: 4px 10px;
+            cursor: pointer;
+        }
+
+        .server-info-panel .server-ip:hover {
+            background: #e0e7ff;
+        }
+
+        .server-info-panel .server-info-hint {
+            color: #6b7280;
+            font-size: 13px;
         }
 
         .blocked-attempts-panel {
@@ -420,6 +455,12 @@
                 <button class="btn btn-primary" onclick="openAddModal()">+ Add Domain</button>
                 <button class="btn btn-success" onclick="openAddStaticModal()">+ Add Static Override</button>
             </div>
+        </div>
+
+        <div class="server-info-panel" id="serverInfoPanel">
+            <span class="server-info-label">Server IP:</span>
+            <span id="serverIpList"><span class="server-info-hint">Loading...</span></span>
+            <span class="server-info-hint" id="serverInfoHint"></span>
         </div>
 
         <div class="blocked-attempts-panel">
@@ -742,9 +783,43 @@
                     indicator.classList.add('disabled');
                     text.textContent = data.dnsWhitelistEnabled ? 'Overrides Disabled (Whitelist ON)' : 'Overrides Disabled';
                 }
+
+                updateServerInfo(data);
             } catch (error) {
                 console.error('Error loading status:', error);
             }
+        }
+
+        function updateServerInfo(data) {
+            const list = document.getElementById('serverIpList');
+            const hint = document.getElementById('serverInfoHint');
+            const ips = data.serverIps || [];
+
+            if (ips.length === 0) {
+                list.innerHTML = '<span class="server-info-hint">No network address detected</span>';
+                hint.textContent = '';
+                return;
+            }
+
+            list.innerHTML = '';
+            ips.forEach(ip => {
+                const el = document.createElement('span');
+                el.className = 'server-ip';
+                el.textContent = ip;
+                el.title = 'Click to copy';
+                el.onclick = () => {
+                    navigator.clipboard.writeText(ip).then(() => {
+                        const original = el.textContent;
+                        el.textContent = 'Copied!';
+                        setTimeout(() => { el.textContent = original; }, 1000);
+                    });
+                };
+                list.appendChild(el);
+            });
+
+            const port = data.dnsPort || 53;
+            hint.textContent = 'Point your device\'s DNS at this address' +
+                (port !== 53 ? ' (port ' + port + ')' : '');
         }
 
         async function loadBlockedAttempts() {
