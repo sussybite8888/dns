@@ -112,9 +112,6 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
 
-#ifdef __APPLE__
-    bool launchedFromBundle = setupBundleEnvironment();
-#endif
 
     DnsServerConfig config;
     config.port = 53;
@@ -168,6 +165,11 @@ int main(int argc, char* argv[]) {
         }
     }
     
+    // After argument parsing, so --help doesn't create the data directory
+#ifdef __APPLE__
+    bool launchedFromBundle = setupBundleEnvironment();
+#endif
+
     try {
         DnsServer dnsServer(config);
         g_dnsServer = &dnsServer;

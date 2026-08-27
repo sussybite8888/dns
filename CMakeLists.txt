@@ -93,10 +93,18 @@ target_link_libraries(dns-server
 # JSON library (nlohmann/json - header-only)
 # Use EXCLUDE_FROM_ALL to speed up initial configuration
 include(FetchContent)
+
+# Show clone/download progress during the first configure; without this the
+# dependency downloads are silent and the configure step looks stuck.
+set(FETCHCONTENT_QUIET FALSE)
+
+# Release archives rather than git clones: the nlohmann/json repository is
+# ~170MB of history and test data, while its release archive is ~107KB.
 FetchContent_Declare(
     json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.2
+    URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
+    URL_HASH SHA256=8c4b26bf4b422252e13f332bc5e388ec0ab5c3443d24399acb675e68278d341f
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(json)
 target_link_libraries(dns-server PRIVATE nlohmann_json::nlohmann_json)
@@ -104,8 +112,9 @@ target_link_libraries(dns-server PRIVATE nlohmann_json::nlohmann_json)
 # HTTP server library (cpp-httplib)
 FetchContent_Declare(
     httplib
-    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
-    GIT_TAG v0.14.3
+    URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.14.3.tar.gz
+    URL_HASH SHA256=dcf6486d9030937636d8a4f820ca9531808fd7edb283893dddbaa05f99357e63
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(httplib)
 target_link_libraries(dns-server PRIVATE httplib::httplib)
