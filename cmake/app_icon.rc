@@ -1,0 +1,6 @@
+// Windows resource script: embeds the application icon in dns-server.exe so
+// Explorer, the taskbar and the Alt-Tab switcher show it.
+//
+// The lowest-numbered icon resource is what Explorer displays, so keep this
+// at 1.
+1 ICON "../assets/icons/windows/app_icon.ico"

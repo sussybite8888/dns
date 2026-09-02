@@ -162,7 +162,7 @@ ModerationResult checkAdult(const std::string& lower) {
         "sex tape", "sex cam", "sex chat", "camgirl", "camgirls",
         "escort service", "escorts", "hentai", "rule34", "blowjob",
         "cumshot", "creampie", "deepthroat", "masturbation", "fleshlight",
-        "dildo", "milf", "gangbang", "bukkake",
+        "dildo", "milf", "gangbang", "bukkake", "asa", "valentina"
     };
     for (const char* term : kAdultTerms) {
         if (containsWord(lower, term)) {
