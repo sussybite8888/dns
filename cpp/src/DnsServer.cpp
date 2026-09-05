@@ -23,6 +23,41 @@
 #include <ctime>
 #include <iomanip>
 #include <cctype>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <poll.h>
+
+namespace {
+// Emscripten's socket backends (NODERAWSOCKETS included) are event driven: sockets
+// are always effectively non-blocking and reads return EAGAIN until the host event
+// loop has delivered data. Spinning inside wasm starves that loop, so nothing ever
+// arrives. Yield back to it (ASYNCIFY unwinds us here) until the socket is readable.
+// Returns true when readable, false on timeout; a negative timeout waits forever.
+bool waitForSocketReadable(int fd, int timeoutMs) {
+    constexpr int POLL_INTERVAL_MS = 1;
+    int waitedMs = 0;
+    while (true) {
+        struct pollfd pfd{};
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+
+        int ready = poll(&pfd, 1, 0);
+        if (ready > 0) {
+            return true;
+        }
+        if (ready < 0 && errno != EINTR) {
+            return false;
+        }
+        if (timeoutMs >= 0 && waitedMs >= timeoutMs) {
+            return false;
+        }
+
+        emscripten_sleep(POLL_INTERVAL_MS);
+        waitedMs += POLL_INTERVAL_MS;
+    }
+}
+}  // namespace
+#endif
 
 using json = nlohmann::json;
 
@@ -640,6 +675,15 @@ std::optional<std::vector<uint8_t>> DnsServer::queryUpstream(const std::vector<u
     const size_t MAX_UDP_RESPONSE_SIZE = 4096;
     std::vector<uint8_t> responseBuffer(MAX_UDP_RESPONSE_SIZE);
     socklen_t addrLen = sizeof(upstreamAddr);
+#ifdef __EMSCRIPTEN__
+    // SO_RCVTIMEO is a no-op here and the reply cannot have landed yet, so wait for
+    // it explicitly rather than reading an empty socket and failing with EAGAIN.
+    if (!waitForSocketReadable(proxySocket, static_cast<int>(timeout.tv_sec) * 1000)) {
+        std::cerr << "Timed out waiting for upstream DNS response" << std::endl;
+        close(proxySocket);
+        return std::nullopt;
+    }
+#endif
     ssize_t received = recvfrom(proxySocket, responseBuffer.data(), responseBuffer.size(), 0,
                                 reinterpret_cast<struct sockaddr*>(&upstreamAddr), &addrLen);
 
@@ -1654,6 +1698,7 @@ void DnsServer::start(uint16_t httpPort) {
         dohTlsThread_ = std::make_unique<std::thread>(&DnsServer::runDohTlsServer, this);
     }
 
+#ifndef __EMSCRIPTEN__
     // Start TCP server in separate thread
     tcpThread_ = std::make_unique<std::thread>([this]() {
         while (running_) {
@@ -1673,6 +1718,7 @@ void DnsServer::start(uint16_t httpPort) {
             handleTcpConnection(clientSocket);
         }
     });
+#endif
     
     // Main UDP loop
     // DNS spec allows up to 512 bytes for UDP, but we use 1024 to handle EDNS0 extensions
@@ -1682,10 +1728,21 @@ void DnsServer::start(uint16_t httpPort) {
     socklen_t clientAddrLen = sizeof(clientAddr);
     
     while (running_) {
+#ifdef __EMSCRIPTEN__
+        // Hand the event loop a chance to deliver a datagram; without this recvfrom
+        // only ever reports EAGAIN.
+        if (!waitForSocketReadable(udpSocket_, 250)) {
+            continue;
+        }
+#endif
         ssize_t received = recvfrom(udpSocket_, buffer.data(), buffer.size(), 0,
                                    reinterpret_cast<struct sockaddr*>(&clientAddr), &clientAddrLen);
         
         if (received < 0) {
+            // Nothing queued yet (or a signal interrupted us) - not an error.
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                continue;
+            }
             if (running_) {
                 std::cerr << "Error receiving UDP packet: " << strerror(errno) << std::endl;
             }

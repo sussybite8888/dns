@@ -70,6 +70,27 @@ endif()
 # Create executable
 add_executable(dns-server ${SOURCES})
 
+if(EMSCRIPTEN)
+    target_compile_options(dns-server PRIVATE
+        "-sUSE_PTHREADS=1"
+        "-msimd128"
+        "-sNODERAWSOCKETS=1"
+    )
+    target_link_options(dns-server PRIVATE
+    "-sNODERAWSOCKETS=1"
+    "-sUSE_PTHREADS=1"
+    "-O3"
+    "-lnodefs.js"
+    "-sNODERAWFS=1"
+    "-msimd128"
+    # Emscripten sockets never block, so the server has to yield to the host event
+    # loop while waiting on a datagram. ASYNCIFY lets emscripten_sleep() unwind out
+    # of the blocking read loops and resume once data has arrived.
+    "-sASYNCIFY=1"
+    "-sASYNCIFY_STACK_SIZE=65536"
+    )
+endif()
+
 # macOS: package Release builds as an app bundle (dns-server.app).
 # Debug/RelWithDebInfo builds stay a plain CLI binary for easy local use.
 if(APPLE AND NOT IOS AND CMAKE_BUILD_TYPE STREQUAL "Release")

@@ -3,6 +3,7 @@ dist/
 build/
 build-ios/
 build-ios-sim/
+build-nodejs/
 *.log
 .DS_Store
 .env
