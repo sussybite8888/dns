@@ -56,6 +56,27 @@ bool waitForSocketReadable(int fd, int timeoutMs) {
         waitedMs += POLL_INTERVAL_MS;
     }
 }
+
+// cpp-httplib's default socket options ask for SO_REUSEPORT, which emscripten
+// forwards to node as net.BoundSocket's `reusePort`. libuv only implements that
+// on platforms with load-balancing SO_REUSEPORT (Linux 3.9+), so everywhere else
+// the bind fails with ENOTSUP and the web UI never comes up. SO_REUSEADDR gives
+// us the restart-without-TIME_WAIT behaviour we actually want and is portable.
+//
+// The accept loop also needs a non-zero idle interval. With the default of zero
+// httplib skips its select() and calls accept() straight away; emscripten sockets
+// never block, so that spins on EAGAIN without ever handing control back to the
+// host event loop - which means node's asynchronous listen() never completes and
+// no connection is ever delivered. A non-zero interval makes httplib wait in
+// poll() first, which emscripten implements as a real blocking wait.
+void configureServerForEmscripten(httplib::Server& svr) {
+    svr.set_socket_options([](socket_t sock) {
+        int yes = 1;
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR,
+                   reinterpret_cast<const void*>(&yes), sizeof(yes));
+    });
+    svr.set_idle_interval(0, 100000);  // 100ms
+}
 }  // namespace
 #endif
 
@@ -389,6 +410,22 @@ void DnsServer::setupTcpServer() {
 
 void DnsServer::handleTcpConnection(int clientSocket) {
     try {
+        // Bound how long a single connection can occupy this handler. The TCP
+        // accept loop is single-threaded and services each connection inline, so
+        // without a timeout one client that connects and then stalls - sending
+        // only part of the 2-byte length prefix, or none of the body it promised
+        // in that prefix - would block the MSG_WAITALL recv() calls below forever
+        // and freeze the entire TCP DNS service for every other client (a trivial
+        // slowloris DoS; the logs show bots opening TCP connections from the
+        // public internet). With a receive timeout a stalled read returns short
+        // and falls through to the existing "close and return" checks; the send
+        // timeout does the same for a client that stops reading our response.
+        struct timeval tcpTimeout;
+        tcpTimeout.tv_sec = 5;
+        tcpTimeout.tv_usec = 0;
+        setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &tcpTimeout, sizeof(tcpTimeout));
+        setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, &tcpTimeout, sizeof(tcpTimeout));
+
         // Read the 2-byte length prefix
         uint8_t lengthBytes[2];
         ssize_t received = recv(clientSocket, lengthBytes, 2, MSG_WAITALL);
@@ -716,6 +753,9 @@ DnsMessage DnsServer::buildErrorResponse(const DnsMessage& query, uint8_t rcode)
 
 void DnsServer::setupHttpServer(uint16_t port) {
     httplib::Server svr;
+#ifdef __EMSCRIPTEN__
+    configureServerForEmscripten(svr);
+#endif
     
     // CORS headers
     svr.set_default_headers({
@@ -1590,6 +1630,9 @@ void DnsServer::setupStaticHttpServer(uint16_t httpPort) {
             
             serverThreads.push_back(std::make_unique<std::thread>([htmlPath, domain, port]() {
                 httplib::Server svr;
+#ifdef __EMSCRIPTEN__
+                configureServerForEmscripten(svr);
+#endif
                 
                 // CORS headers
                 svr.set_default_headers({

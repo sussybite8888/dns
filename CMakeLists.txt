@@ -75,6 +75,13 @@ if(EMSCRIPTEN)
         "-sUSE_PTHREADS=1"
         "-msimd128"
         "-sNODERAWSOCKETS=1"
+        # Emscripten disables C++ exceptions by default, which turns every throw
+        # into an abort() that takes the whole process down. The HTTP handlers are
+        # built on try/catch (bad JSON, a failed database write, ...), so without
+        # this any malformed API request kills the server instead of returning 400.
+        # -fexceptions (JS-based EH) rather than -fwasm-exceptions: the latter is
+        # not supported alongside ASYNCIFY, which the DNS read loops depend on.
+        "-fexceptions"
     )
     target_link_options(dns-server PRIVATE
     "-sNODERAWSOCKETS=1"
@@ -83,6 +90,7 @@ if(EMSCRIPTEN)
     "-lnodefs.js"
     "-sNODERAWFS=1"
     "-msimd128"
+    "-fexceptions"
     # Emscripten sockets never block, so the server has to yield to the host event
     # loop while waiting on a datagram. ASYNCIFY lets emscripten_sleep() unwind out
     # of the blocking read loops and resume once data has arrived.
