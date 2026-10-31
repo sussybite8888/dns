@@ -77,6 +77,32 @@ void configureServerForEmscripten(httplib::Server& svr) {
     });
     svr.set_idle_interval(0, 100000);  // 100ms
 }
+
+// Write the whole buffer to a TCP socket. Emscripten's send() is non-blocking
+// and may short-write or report EAGAIN (and SO_SNDTIMEO never fires), so we loop
+// and yield to the host event loop between attempts, giving up after idleMsBudget
+// milliseconds without progress so a client that stops reading cannot pin us.
+bool tcpSendAll(int fd, const uint8_t* buf, size_t len, int idleMsBudget) {
+    size_t sent = 0;
+    int idleMs = 0;
+    while (sent < len) {
+        ssize_t w = send(fd, buf + sent, len - sent, 0);
+        if (w > 0) {
+            sent += static_cast<size_t>(w);
+            idleMs = 0;
+            continue;
+        }
+        if (w < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+            return false;  // hard error
+        }
+        if (idleMsBudget >= 0 && idleMs >= idleMsBudget) {
+            return false;  // peer is not draining our response
+        }
+        emscripten_sleep(1);
+        idleMs += 1;
+    }
+    return true;
+}
 }  // namespace
 #endif
 
@@ -84,6 +110,57 @@ using json = nlohmann::json;
 
 namespace {
 constexpr size_t MAX_BLOCKED_WHITELIST_ATTEMPTS = 20;
+
+// Read exactly `len` bytes from a TCP socket into `buf`, returning the number of
+// bytes actually read: `len` on success, fewer if the peer closes the connection
+// or stalls. Used for the TCP DNS length prefix and the message body; the caller
+// treats any short read as "give up and close".
+//
+// We accumulate with plain recv() rather than one MSG_WAITALL call: MSG_WAITALL's
+// interaction with SO_RCVTIMEO is not portable (on macOS it ignores the timeout
+// and blocks until every byte arrives or the peer closes - a slowloris client
+// that dribbles one byte could then wedge the single-threaded accept loop), and
+// emscripten does not honour MSG_WAITALL at all. The loop gives the same result
+// on every platform and enforces the stall deadline itself.
+//
+// Native: the socket blocks in recv() but is bounded by the SO_RCVTIMEO the caller
+// set, so an EAGAIN means that timeout already elapsed with no data - time to give
+// up. Emscripten: sockets never block and SO_RCVTIMEO is a no-op, so EAGAIN just
+// means "nothing yet"; yield to the host event loop and retry until `idleMsBudget`
+// milliseconds have passed without progress.
+ssize_t tcpRecvExact(int fd, uint8_t* buf, size_t len, int idleMsBudget) {
+    size_t got = 0;
+    int idleMs = 0;
+    while (got < len) {
+        ssize_t r = recv(fd, buf + got, len - got, 0);
+        if (r > 0) {
+            got += static_cast<size_t>(r);
+            idleMs = 0;
+            continue;
+        }
+        if (r == 0) {
+            break;  // peer closed the connection
+        }
+        if (errno == EINTR) {
+            continue;  // interrupted before any data; retry
+        }
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            break;  // hard error
+        }
+#ifdef __EMSCRIPTEN__
+        if (idleMsBudget >= 0 && idleMs >= idleMsBudget) {
+            break;  // stalled client - do not wait forever
+        }
+        emscripten_sleep(1);
+        idleMs += 1;
+#else
+        (void)idleMs;
+        (void)idleMsBudget;
+        break;  // SO_RCVTIMEO already elapsed with no data; give up
+#endif
+    }
+    return static_cast<ssize_t>(got);
+}
 
 bool isValidIpv4Address(const std::string& ip) {
     struct sockaddr_in sa;
@@ -412,28 +489,33 @@ void DnsServer::handleTcpConnection(int clientSocket) {
     try {
         // Bound how long a single connection can occupy this handler. The TCP
         // accept loop is single-threaded and services each connection inline, so
-        // without a timeout one client that connects and then stalls - sending
+        // without a deadline one client that connects and then stalls - sending
         // only part of the 2-byte length prefix, or none of the body it promised
-        // in that prefix - would block the MSG_WAITALL recv() calls below forever
-        // and freeze the entire TCP DNS service for every other client (a trivial
-        // slowloris DoS; the logs show bots opening TCP connections from the
-        // public internet). With a receive timeout a stalled read returns short
-        // and falls through to the existing "close and return" checks; the send
-        // timeout does the same for a client that stops reading our response.
+        // in that prefix - would wedge the read below forever and freeze the
+        // entire TCP DNS service for every other client (a trivial slowloris DoS;
+        // the logs show bots opening TCP connections from the public internet).
+        //
+        // Native: SO_RCVTIMEO/SO_SNDTIMEO make recv()/send() return instead of
+        // blocking indefinitely. Emscripten: those options are no-ops (nothing
+        // blocks there), so tcpRecvExact()/tcpSendAll() enforce the same deadline
+        // by yielding to the host event loop and giving up after kTcpIdleMs of no
+        // progress. Either way a stalled transfer returns short and falls through
+        // to the "close and return" checks.
+        const int kTcpIdleMs = 5000;
         struct timeval tcpTimeout;
-        tcpTimeout.tv_sec = 5;
-        tcpTimeout.tv_usec = 0;
+        tcpTimeout.tv_sec = kTcpIdleMs / 1000;
+        tcpTimeout.tv_usec = (kTcpIdleMs % 1000) * 1000;
         setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &tcpTimeout, sizeof(tcpTimeout));
         setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, &tcpTimeout, sizeof(tcpTimeout));
 
         // Read the 2-byte length prefix
         uint8_t lengthBytes[2];
-        ssize_t received = recv(clientSocket, lengthBytes, 2, MSG_WAITALL);
+        ssize_t received = tcpRecvExact(clientSocket, lengthBytes, 2, kTcpIdleMs);
         if (received != 2) {
             close(clientSocket);
             return;
         }
-        
+
         uint16_t messageLength = (lengthBytes[0] << 8) | lengthBytes[1];
         // DNS spec: max 65535 bytes for TCP messages, but we limit to 4096 for safety
         const uint16_t MAX_DNS_MESSAGE_SIZE = 4096;
@@ -442,10 +524,10 @@ void DnsServer::handleTcpConnection(int clientSocket) {
             close(clientSocket);
             return;
         }
-        
+
         // Read the DNS message
         std::vector<uint8_t> buffer(messageLength);
-        received = recv(clientSocket, buffer.data(), messageLength, MSG_WAITALL);
+        received = tcpRecvExact(clientSocket, buffer.data(), messageLength, kTcpIdleMs);
         if (received != static_cast<ssize_t>(messageLength)) {
             close(clientSocket);
             return;
@@ -484,13 +566,23 @@ void DnsServer::sendTcpResponse(int clientSocket, const std::vector<uint8_t>& re
     lengthBytes[0] = (length >> 8) & 0xFF;
     lengthBytes[1] = length & 0xFF;
     
-    // Send length prefix
+#ifdef __EMSCRIPTEN__
+    // Emscripten send() never blocks and can short-write, so flush both the
+    // prefix and the body in full (or give up if the client stops reading).
+    const int kTcpSendIdleMs = 5000;
+    if (!tcpSendAll(clientSocket, lengthBytes, 2, kTcpSendIdleMs)) {
+        return;
+    }
+    tcpSendAll(clientSocket, response.data(), response.size(), kTcpSendIdleMs);
+#else
+    // Send length prefix (send() is bounded by the SO_SNDTIMEO set by the caller)
     if (send(clientSocket, lengthBytes, 2, 0) != 2) {
         return;
     }
-    
+
     // Send response
     send(clientSocket, response.data(), response.size(), 0);
+#endif
 }
 
 void DnsServer::sendUdpResponse(const std::vector<uint8_t>& response, const std::string& addr, uint16_t port) {
@@ -1727,12 +1819,20 @@ void DnsServer::setupStaticHttpServer(uint16_t httpPort) {
 
 void DnsServer::start(uint16_t httpPort) {
     running_ = true;
+#ifndef __EMSCRIPTEN__
+    // Native fds are process-global, so both listening sockets are created here on
+    // the main thread: UDP is serviced by the main loop at the end of this
+    // function and TCP by the thread below. Under emscripten each pthread is a
+    // separate JS worker and a socket's backing objects cannot cross workers, so
+    // there each socket is created inside the worker that services it (the UDP and
+    // TCP threads below), mirroring how each HTTP server owns its own socket.
     setupUdpServer();
     setupTcpServer();
-    
+#endif
+
     // Start HTTP server in separate thread
     httpThread_ = std::make_unique<std::thread>(&DnsServer::setupHttpServer, this, httpPort);
-    
+
     // Start static HTTP server in separate thread
     staticHttpThread_ = std::make_unique<std::thread>(&DnsServer::setupStaticHttpServer, this, httpPort);
 
@@ -1741,35 +1841,89 @@ void DnsServer::start(uint16_t httpPort) {
         dohTlsThread_ = std::make_unique<std::thread>(&DnsServer::runDohTlsServer, this);
     }
 
-#ifndef __EMSCRIPTEN__
-    // Start TCP server in separate thread
+    // Start TCP server in a separate thread.
     tcpThread_ = std::make_unique<std::thread>([this]() {
+#ifdef __EMSCRIPTEN__
+        // Under emscripten the listening socket must be created on the thread that
+        // accepts on it (a socket's node objects cannot be shared across pthread
+        // workers). A bind failure throws, so catch it here - an uncaught throw on
+        // this thread would terminate the whole process.
+        try {
+            setupTcpServer();
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to start TCP server: " << e.what() << std::endl;
+            return;
+        }
+#endif
         while (running_) {
+#ifdef __EMSCRIPTEN__
+            // accept() never blocks here; yield to the host event loop until a
+            // connection is pending (node delivers it, making the listening socket
+            // readable) instead of spinning on EAGAIN.
+            if (!waitForSocketReadable(tcpSocket_, 250)) {
+                continue;
+            }
+#endif
             struct sockaddr_in clientAddr;
             socklen_t clientAddrLen = sizeof(clientAddr);
             int clientSocket = accept(tcpSocket_, reinterpret_cast<struct sockaddr*>(&clientAddr), &clientAddrLen);
-            
+
             if (clientSocket < 0) {
+#ifdef __EMSCRIPTEN__
+                // A readable poll can race another drain of the backlog; treat a
+                // would-block accept() as "nothing pending" rather than an error.
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    continue;
+                }
+#endif
                 if (running_) {
                     std::cerr << "Error accepting TCP connection: " << strerror(errno) << std::endl;
                 }
                 continue;
             }
-            
+
             // Handle each connection in the same thread (simple approach)
             // For production, you might want to spawn a new thread per connection
             handleTcpConnection(clientSocket);
         }
     });
+
+#ifdef __EMSCRIPTEN__
+    // Inbound UDP must be received on the thread that created its socket (the same
+    // cross-worker socket constraint as TCP/HTTP), and the main thread cannot
+    // service these socket events, so run the UDP loop on its own worker. The main
+    // thread then just stays alive, yielding to the host event loop so the workers
+    // (and node's I/O) keep running.
+    udpThread_ = std::make_unique<std::thread>([this]() {
+        try {
+            setupUdpServer();
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to start UDP server: " << e.what() << std::endl;
+            return;
+        }
+        runUdpLoop();
+    });
+
+    while (running_) {
+        emscripten_sleep(100);
+    }
+#else
+    // Native: run the UDP loop on the main thread.
+    runUdpLoop();
 #endif
-    
-    // Main UDP loop
+}
+
+// Receive-and-dispatch loop for inbound UDP DNS queries. Runs until running_ is
+// cleared. The caller guarantees udpSocket_ has been set up on this same thread
+// (required under emscripten, where a socket's backing objects cannot be shared
+// across pthread workers).
+void DnsServer::runUdpLoop() {
     // DNS spec allows up to 512 bytes for UDP, but we use 1024 to handle EDNS0 extensions
     const size_t UDP_BUFFER_SIZE = 1024;
     std::vector<uint8_t> buffer(UDP_BUFFER_SIZE);
     struct sockaddr_in clientAddr;
     socklen_t clientAddrLen = sizeof(clientAddr);
-    
+
     while (running_) {
 #ifdef __EMSCRIPTEN__
         // Hand the event loop a chance to deliver a datagram; without this recvfrom
@@ -1780,7 +1934,7 @@ void DnsServer::start(uint16_t httpPort) {
 #endif
         ssize_t received = recvfrom(udpSocket_, buffer.data(), buffer.size(), 0,
                                    reinterpret_cast<struct sockaddr*>(&clientAddr), &clientAddrLen);
-        
+
         if (received < 0) {
             // Nothing queued yet (or a signal interrupted us) - not an error.
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
@@ -1791,13 +1945,13 @@ void DnsServer::start(uint16_t httpPort) {
             }
             continue;
         }
-        
+
         // Validate received packet size
         if (received > static_cast<ssize_t>(buffer.size())) {
             std::cerr << "Received packet larger than buffer: " << received << " bytes" << std::endl;
             continue;
         }
-        
+
         char clientIp[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &clientAddr.sin_addr, clientIp, INET_ADDRSTRLEN);
         uint16_t clientPort = ntohs(clientAddr.sin_port);
@@ -1837,6 +1991,11 @@ void DnsServer::stop() {
     
     if (tcpThread_ && tcpThread_->joinable()) {
         tcpThread_->join();
+    }
+
+    // Only created under emscripten (native runs the UDP loop on the main thread).
+    if (udpThread_ && udpThread_->joinable()) {
+        udpThread_->join();
     }
 
     if (dohTlsThread_ && dohTlsThread_->joinable()) {

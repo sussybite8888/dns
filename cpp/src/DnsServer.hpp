@@ -42,6 +42,7 @@ private:
     std::unique_ptr<std::thread> httpThread_;
     std::unique_ptr<std::thread> staticHttpThread_;
     std::unique_ptr<std::thread> tcpThread_;
+    std::unique_ptr<std::thread> udpThread_;
     std::unique_ptr<std::thread> dohTlsThread_;
     std::atomic<bool> running_;
     std::unordered_set<std::string> dnsWhitelistIps_;
@@ -51,6 +52,7 @@ private:
     
     void loadDatabase();
     void setupUdpServer();
+    void runUdpLoop();
     void setupTcpServer();
     void handleTcpConnection(int clientSocket);
     void sendTcpResponse(int clientSocket, const std::vector<uint8_t>& response);
